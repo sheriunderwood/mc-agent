@@ -955,10 +955,45 @@ def stale_script(item_name: str) -> str | None:
     return None
 
 
+def is_repo_script(item_name: str) -> bool:
+    """Is this inventory script a copy of one of the repo's scripts (any version)?"""
+    return any(item_name == path.stem or re.fullmatch(re.escape(path.stem) + r"-v\d+\.\d+\.\d+", item_name)
+               for path in _repo_scripts())
+
+
+def scripts_to_tidy(entries: list[dict]) -> tuple[list[tuple[dict, str]], list[str]]:
+    """From a folder listing: the repo scripts to move to the Trash, each with why
+    (an old version, or an extra copy of the same name, keeping the newest by
+    `created`), and notes about copies left alone (no id or date to go by:
+    fail closed). Other scripts are never touched."""
+    scripts = [e for e in entries if e.get("type") == "script" and is_repo_script(str(e.get("name", "")))]
+    go, notes = [], []
+    for e in scripts:
+        if why := stale_script(str(e.get("name", ""))):
+            if e.get("id"):
+                go.append((e, why))
+            else:
+                notes.append(f"{e.get('name')}: no id, left alone")
+    by_name: dict[str, list[dict]] = {}
+    for e in scripts:
+        if not stale_script(str(e.get("name", ""))):
+            by_name.setdefault(str(e.get("name", "")), []).append(e)
+    for name, copies in by_name.items():
+        if len(copies) < 2:
+            continue
+        if not all(c.get("id") and c.get("created") for c in copies):
+            notes.append(f"{name}: {len(copies)} copies, but not all have an id and date; left alone")
+            continue
+        copies.sort(key=lambda c: str(c["created"]), reverse=True)     # ISO times: newest first
+        go += [(c, f"extra copy (keeping the newest, {copies[0]['created'][:10]})") for c in copies[1:]]
+    return go, notes
+
+
 @tool("tidy_scripts",
-      "Move old copies of the repo's scripts out of My Inventory/Scripts into the Trash (still "
-      "recoverable there): unversioned ones like dance_hud, and older versions like "
-      "dance_hud-v1.2.0. Current versions and other scripts stay. Only the owner can ask for this, by IM.",
+      "Move old and extra copies of the repo's scripts out of My Inventory/Scripts into the Trash "
+      "(still recoverable there): unversioned ones like dance_hud, older versions like "
+      "dance_hud-v1.2.0, and extra copies of the same version (the newest stays). Other scripts "
+      "stay. Only the owner can ask for this, by IM.",
       {"dry_run": Annotated[bool, "true to only list what would go"]})
 async def tidy_scripts(args):
     if not MC_CONN:
@@ -969,24 +1004,21 @@ async def tidy_scripts(args):
         if listing.get("ok") is False:
             return {"content": [{"type": "text", "text": f"Couldn't list {SCRIPTS_FOLDER}: {listing.get('error')}"}],
                     "is_error": True}
-        old = [(e["name"], why) for e in listing.get("entries", [])
-               if e.get("type") == "script" and (why := stale_script(str(e.get("name", ""))))]
-        if not old:
-            return {"content": [{"type": "text", "text": "Nothing to tidy: only current versions are there."}]}
+        go, notes = scripts_to_tidy(listing.get("entries", []))
+        tail = (" Left alone: " + "; ".join(notes)) if notes else ""
+        if not go:
+            return {"content": [{"type": "text", "text": "Nothing to tidy: only current versions, one copy each." + tail}]}
         if args.get("dry_run"):
             return {"content": [{"type": "text", "text": "Would move to Trash: "
-                                 + "; ".join(f"{n} ({w})" for n, w in old)}]}
+                                 + "; ".join(f"{e['name']} ({w})" for e, w in go) + "." + tail}]}
         done = []
-        for name, why in old:
-            # By its id, so two items with the same name can't be mixed up.
-            item = next((e.get("id") for e in listing["entries"] if e.get("name") == name), None) \
-                or f"{SCRIPTS_FOLDER}/{name}"
-            r = await mc_call(tok, port, "delete", {"item": item})
-            done.append(f"{name} ({why})" if r.get("ok") is not False else f"{name}: failed ({r.get('error')})")
+        for e, why in go:
+            r = await mc_call(tok, port, "delete", {"item": e["id"]})   # by id: same-named copies never mixed up
+            done.append(f"{e['name']} ({why})" if r.get("ok") is not False else f"{e['name']}: failed ({r.get('error')})")
     except (httpx2.HTTPError, OSError, ValueError) as e:
         return {"content": [{"type": "text", "text": f"Couldn't reach MC ({type(e).__name__})."}], "is_error": True}
     log(f"SCRIPTS tidied: {done}")
-    return {"content": [{"type": "text", "text": "Moved to Trash: " + "; ".join(done)}]}
+    return {"content": [{"type": "text", "text": "Moved to Trash: " + "; ".join(done) + "." + tail}]}
 
 
 @tool("scan_wearing",
