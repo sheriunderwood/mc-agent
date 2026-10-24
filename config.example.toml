@@ -29,6 +29,9 @@ landmark = ""
 crowd_limit = 40          # more people than this within chat range: local chat is filtered (saves tokens)
 chat_range_m = 20
 owner_model = "smart"     # who answers owner messages: "smart" (Opus) or "chat" (Haiku, cheaper)
+# Channels the agent never speaks on, whoever asks, owners included: e.g. an
+# RLV relay prim's command channel. Typed "/<channel>..." counts too.
+no_speak_channels = []
 
 [greeting]
 range_m = 50              # greet people within this distance

@@ -63,6 +63,7 @@ DEFAULTS = {
         "crowd_limit": 40,     # more people than this within chat range: local chat is filtered
         "chat_range_m": 20,
         "owner_model": "smart",   # "chat": the chat model (Haiku) answers owner messages too
+        "no_speak_channels": [],  # channels the agent never speaks on, whoever asks (e.g. an RLV prim's)
     },
     "greeting": {
         "range_m": 50,         # greet people within this distance

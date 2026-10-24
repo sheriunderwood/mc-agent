@@ -106,6 +106,20 @@ MEMORY_ACTIONS = {f"mcp__{MEMORY}__install_script", f"mcp__{MEMORY}__give_to_own
 # Tools whose arguments leave this machine or get stored: scanned for secrets.
 OUTGOING = {t("say"), t("send"), t("send_im"), t("send_group"), t("answer")}
 SCANNED = OUTGOING | set(MEMORY_TOOLS) | {t("offer_teleport")}
+def _no_speak_channels() -> frozenset[int]:
+    """config [chat] no_speak_channels as integers; anything else stops the agent
+    (a typo here must not quietly open a channel that was meant to be shut)."""
+    out = set()
+    for c in config.get("chat", "no_speak_channels") or []:
+        if isinstance(c, bool) or not isinstance(c, (int, str)) or not str(c).lstrip("-").isdigit():
+            raise SystemExit(f"config.toml [chat] no_speak_channels: {c!r} isn't a channel number")
+        out.add(int(c))
+    return frozenset(out)
+
+
+NO_SPEAK_CHANNELS = _no_speak_channels()
+TYPED_CHANNEL_RE = re.compile(r"\s*/(-?\d+)")   # "/34335cmd" typed in the chat box goes to channel 34335
+
 # Every Morgen Commander tool the model may use at all; the Guard denies any other.
 MC_TOOLS = set(READ_TOOLS + ACT_TOOLS + ADMIN_TOOLS + [t("login")])
 
@@ -1371,6 +1385,24 @@ class Guard:
     CLUB_LINK_AGAIN_S = 3600   # the same person, same kind: at most once an hour
     CLUB_LINK_PER_HOUR = 30    # everyone together: a cap, so alts can't make the avatar spam
 
+    @staticmethod
+    def check_channel(args: dict) -> str | None:
+        """Why this `say` may not go out: it's on a channel in [chat]
+        no_speak_channels (given as `channel`, or typed as "/<channel>..."),
+        whoever asked. Unreadable channels are refused (fail closed)."""
+        if not NO_SPEAK_CHANNELS:
+            return None
+        try:
+            channels = {int(args.get("channel") or 0)}
+        except (TypeError, ValueError):
+            return "That channel isn't a number."
+        if args.get("typed") is True and (m := TYPED_CHANNEL_RE.match(str(args.get("text", "")))):
+            channels.add(int(m.group(1)))
+        if channels & NO_SPEAK_CHANNELS:
+            return ("You never speak on that channel (config: [chat] no_speak_channels), "
+                    "whoever asks: it controls something you mustn't use yourself.")
+        return None
+
     FRIEND_TP_AGAIN_S = 600    # one TP offer to the same friend every 10 minutes at most
 
     def is_friend_tp(self, name: str, args: dict) -> bool:
@@ -1672,6 +1704,8 @@ class Guard:
                 return deny("The owner asked you to take a break "
                             + (f"until {b['until']}." if b.get("until") else "until they log you back in themselves."))
             log("logging the avatar back in")
+        if name == t("say") and (reason := self.check_channel(args)):
+            return deny(reason)
         if name == t("say") and args.get("volume") == "shout" and not self.owner_spoke:
             return deny("Don't shout across the region. Use normal chat, or a wave for people further away.")
         if self.observe_only and (name in ACT_TOOLS or name in ADMIN_TOOLS or name in MEMORY_ACTIONS):

@@ -241,6 +241,9 @@ the AI, decides what's allowed:
   (FRIENDS.md) who asks for one.
 - **Deny by default:** Morgen Commander tools the agent doesn't use (paying,
   giving, updating MC, deleting…) are refused outright, even for owners.
+- **Channels it never speaks on:** list a script's command channel (an RLV
+  relay prim's, say) in `[chat] no_speak_channels`, and the agent is refused
+  on it, typed or not, whoever asks.
 - **Secrets never leave:** every message and saved note is scanned, and
   anything that looks like a key or token is refused. The AI has no shell,
   file or web access.

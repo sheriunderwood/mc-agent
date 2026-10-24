@@ -2,6 +2,7 @@
 limit."""
 
 import unittest
+from unittest import mock
 
 from support import OWNER, agent, feed, guard, im, memory, pre, t
 
@@ -72,6 +73,59 @@ class Shouting(unittest.TestCase):
         g = guard()
         feed(g, t("events"), {"events": [im(OWNER)]})
         self.assertIsNone(pre(g, t("say"), {"text": "HI", "volume": "shout"}))
+
+
+class NoSpeakChannels(unittest.TestCase):
+    """[chat] no_speak_channels: e.g. an RLV prim's channel, never spoken on."""
+
+    def setUp(self):
+        self.saved = agent.NO_SPEAK_CHANNELS
+        agent.NO_SPEAK_CHANNELS = frozenset({34335})
+
+    def tearDown(self):
+        agent.NO_SPEAK_CHANNELS = self.saved
+
+    def say(self, g=None, **args):
+        return pre(g or guard(), t("say"), args)
+
+    def test_channel_refused(self):
+        self.assertIsNotNone(self.say(text="rlvtp Hana", channel=34335))
+        self.assertIsNotNone(self.say(text="rlvtp Hana", channel="34335"))
+
+    def test_typed_slash_channel_refused(self):
+        self.assertIsNotNone(self.say(text="/34335rlvtp Hana Moonchild | Somewhere/1/2/3", typed=True))
+        self.assertIsNotNone(self.say(text="  /34335 rlvstatus", typed=True))
+
+    def test_even_for_an_owner(self):
+        g = guard()
+        feed(g, t("events"), {"events": [im(OWNER, "rlvtp Hana for me")]})
+        self.assertIsNotNone(self.say(g, text="/34335rlvtp Hana", typed=True))
+
+    def test_unreadable_channel_refused(self):
+        self.assertIsNotNone(self.say(text="x", channel="thirty"))
+
+    def test_other_channels_fine(self):
+        self.assertIsNone(self.say(text="status", channel=34336))
+        self.assertIsNone(self.say(text="/34336status", typed=True))
+        self.assertIsNone(self.say(text="hi everyone!"))
+        self.assertIsNone(self.say(text="/me waves", typed=True))
+
+    def test_not_typed_is_just_words_on_open_chat(self):
+        # Without typed, "/34335..." is said as plain text on channel 0.
+        self.assertIsNone(self.say(text="/34335 is the RLV channel"))
+
+    def test_empty_setting_changes_nothing(self):
+        agent.NO_SPEAK_CHANNELS = frozenset()
+        self.assertIsNone(self.say(text="x", channel=34335))
+
+    def test_setting_must_be_numbers(self):
+        for bad in (["x"], [True], [1.5], ["34335; rm"], [None]):
+            with self.subTest(value=bad), mock.patch.object(agent.config, "get",
+                                                            lambda s, k, v=bad: v if k == "no_speak_channels" else None):
+                with self.assertRaises(SystemExit):
+                    agent._no_speak_channels()
+        with mock.patch.object(agent.config, "get", lambda s, k: [34335, "-5"] if k == "no_speak_channels" else None):
+            self.assertEqual(agent._no_speak_channels(), {34335, -5})
 
 
 class RateLimit(unittest.TestCase):
