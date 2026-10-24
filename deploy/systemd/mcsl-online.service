@@ -1,0 +1,15 @@
+# One keep-online check (run by mcsl-online.timer every 5 minutes): logs the
+# avatar back in if MC is running but the avatar is offline (and not on a break),
+# when config.toml has [mc] keep_online = true.
+# Installed by deploy/install.sh (Linux), which fills in the code path, the data path and the avatar.
+[Unit]
+Description=Keep the avatar online (__AVATAR__)
+
+[Service]
+Type=oneshot
+WorkingDirectory=__CODE__
+Environment="MCSL_HOME=__DATA__"
+EnvironmentFile=-%h/.config/mcsl-agent/secrets.env
+ExecStart="__CODE__/.venv/bin/python" "__CODE__/tools/keep_online.py"
+StandardOutput=append:__DATA__/logs/online.log
+StandardError=append:__DATA__/logs/online.log

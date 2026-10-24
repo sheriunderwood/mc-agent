@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Every 15 minutes: research the stores the agent noted (shopping/inbox.md), and once a day re-check every SLURL. Installed by deploy/install.sh (fills in the code and data paths). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.mcsl.__SLUG__.shop</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__CODE__/.venv/bin/python</string>
+    <string>__CODE__/tools/shop_lookup.py</string>
+    <string>due</string>
+  </array>
+  <key>WorkingDirectory</key><string>__CODE__</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>MCSL_HOME</key><string>__DATA__</string></dict>
+  <key>StartInterval</key><integer>900</integer>
+  <key>StandardOutPath</key><string>__DATA__/logs/shop.log</string>
+  <key>StandardErrorPath</key><string>__DATA__/logs/shop.log</string>
+</dict>
+</plist>

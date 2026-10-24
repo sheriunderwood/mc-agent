@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# An avatar's data belongs in its data folder (init.py), never in the code.
+# Just in case someone runs things with the data folder set to here:
+config.toml
+config.local.toml
+state.json
+contacts.json
+break.json
+agent.pid
+logs/
+usage/
+reports/
+friends/
+
+# Secrets never go in the repo
+.env
+*.token
+secrets.env

@@ -1,0 +1,13 @@
+# One round of shopping chores (run by mcsl-shop.timer every 15 minutes):
+# research the stores the agent noted, and once a day re-check every SLURL.
+# Installed by deploy/install.sh (Linux), which fills in the code path, the data path and the avatar.
+[Unit]
+Description=Shopping list research (__AVATAR__)
+
+[Service]
+Type=oneshot
+WorkingDirectory=__CODE__
+Environment="MCSL_HOME=__DATA__"
+ExecStart="__CODE__/.venv/bin/python" "__CODE__/tools/shop_lookup.py" due
+StandardOutput=append:__DATA__/logs/shop.log
+StandardError=append:__DATA__/logs/shop.log

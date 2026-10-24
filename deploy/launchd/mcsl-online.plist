@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Every 5 minutes: logs the avatar back in if MC is running but the avatar is offline (and not on a break). Only when config.toml has [mc] keep_online = true. Installed by deploy/install.sh (fills in the code and data paths). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.mcsl.__SLUG__.online</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__CODE__/.venv/bin/python</string>
+    <string>__CODE__/tools/keep_online.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>__CODE__</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>MCSL_HOME</key><string>__DATA__</string></dict>
+  <key>StartInterval</key><integer>300</integer>
+  <key>StandardOutPath</key><string>__DATA__/logs/online.log</string>
+  <key>StandardErrorPath</key><string>__DATA__/logs/online.log</string>
+</dict>
+</plist>

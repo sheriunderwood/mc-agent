@@ -1,0 +1,12 @@
+# Runs mcsl-shop.service every 15 minutes (:07, :22, :37, :52, between the
+# syncs). If the machine was off or asleep, it runs once as soon as it's back.
+[Unit]
+Description=Shopping list research, every 15 minutes (__AVATAR__)
+
+[Timer]
+OnCalendar=*:07/15
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

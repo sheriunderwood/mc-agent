@@ -1,0 +1,12 @@
+# Runs mcsl-online.service every 5 minutes. If the machine was off or asleep,
+# it runs once as soon as it's back.
+[Unit]
+Description=Keep the avatar online, every 5 minutes (__AVATAR__)
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

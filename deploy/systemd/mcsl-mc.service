@@ -1,0 +1,17 @@
+# Morgen Commander, headless, with the avatar logged in and kept online.
+# Installed by deploy/install.sh --mc (Linux), which fills in MC's path, the avatar and the data path.
+# --auto-update: MC installs new versions itself; after an update it exits with
+# code 75 and Restart=on-failure starts the new version.
+[Unit]
+Description=Morgen Commander, headless (__AVATAR__)
+After=network-online.target
+
+[Service]
+ExecStart="__MC__" --headless --login "__AVATAR__" --auto-update
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:__DATA__/logs/mc.log
+StandardError=append:__DATA__/logs/mc.log
+
+[Install]
+WantedBy=default.target

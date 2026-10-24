@@ -1,0 +1,69 @@
+# Settings for one deployment of the agent. init.py copies this to config.toml
+# in your data folder ($MCSL_HOME, or ~/Library/Application Support/mc-agent on
+# macOS, ~/.local/share/mc-agent on Linux); fill it in there.
+# Anything you leave out uses the default shown here.
+#
+# Settings for one machine only (e.g. [mc] command, keep_online) go in
+# config.local.toml next to it: same format, overrides config.toml.
+
+[avatar]
+name = "youravatar"                       # the Second Life account name the agent drives
+uuid = "00000000-0000-0000-0000-000000000000"
+# Words in local chat that mean someone's talking to the avatar (a regex,
+# matched ignoring case). Default: the first word of the name.
+call_names = 'youravatar|\bnick\b'
+
+[home]
+# Where the avatar lives. There it greets everyone who arrives, and its wearing
+# HUD scans automatically. Elsewhere it only greets friends.
+region = "Your Region"
+parcel = "Your Parcel"
+# Its landing point and a landmark to it (inventory path). Anyone not blocked
+# who asks for it, wherever they are, gets one of these from the club_link tool.
+# landmark empty: it looks for one named after the parcel and region (copy and
+# transfer); none: it sends the SLURL and the avatar asks an owner for one.
+slurl = ""
+landmark = ""
+
+[chat]
+crowd_limit = 40          # more people than this within chat range: local chat is filtered (saves tokens)
+chat_range_m = 20
+owner_model = "smart"     # who answers owner messages: "smart" (Opus) or "chat" (Haiku, cheaper)
+
+[greeting]
+range_m = 50              # greet people within this distance
+poll_seconds = 20         # how often the program checks who's nearby (no AI involved)
+moved_m = 1.5             # someone has moved (so they've rezzed) once their distance changes this much
+settle_seconds = 60       # wait this long after a friend logs in before greeting
+
+[huds]
+# Channels for the dance HUD (scripts/dance_hud.lsl) and the wearing HUD
+# (scripts/wearing.lsl). install_script writes these, the avatar's UUID,
+# the owners from OWNERS.md and the home region/parcel into the scripts.
+dance_channel = 34336
+wearing_channel = 34337
+# UUIDs besides the avatar and its owners who may command the dance HUD.
+extra_commanders = []
+
+[mc]
+# Morgen Commander's program. Default: /Applications/Morgen Commander.app/...
+# on macOS; on Linux, MorgenCommander on the PATH, else ~/MorgenCommander/MorgenCommander.
+command = ""
+# Every 5 minutes, log the avatar back in when MC is running but the avatar is
+# offline, unless it's on a break (deploy/install.sh --online, or --all, sets
+# that up). Good for unattended servers; leave it off where you sometimes log
+# the avatar out on purpose.
+keep_online = false
+
+[secrets]
+# Linux: ~/.config/mcsl-agent/secrets.env with ANTHROPIC_API_KEY=... and
+# MC_API_TOKEN=... lines (chmod 600). macOS: Keychain items
+# <prefix>-anthropic-key and <prefix>-mc-token (see README, "Store the secrets").
+keychain_prefix = "mcsl-agent"
+# Optional fallback for the MC token: a Claude desktop app MCP server's config.
+desktop_server = ""
+
+[friendship]
+# UUIDs of people whose SL friendship offers the avatar may accept on its own
+# (standing approvals from an owner). Everyone else's offers wait for an owner.
+accept_from = []

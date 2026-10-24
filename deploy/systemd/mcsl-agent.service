@@ -1,0 +1,20 @@
+# The agent, restarted if it stops. Installed by deploy/install.sh --agent (Linux),
+# which fills in the code path, the data path, the avatar and the arguments for run.sh.
+# Secrets: ~/.config/mcsl-agent/secrets.env (KEY=value lines, no "export",
+# chmod 600), loaded into this service's environment only.
+[Unit]
+Description=Second Life agent (__AVATAR__)
+After=mcsl-mc.service
+
+[Service]
+WorkingDirectory=__CODE__
+Environment="MCSL_HOME=__DATA__"
+EnvironmentFile=-%h/.config/mcsl-agent/secrets.env
+ExecStart=/usr/bin/env bash "__CODE__/run.sh" __ARGS__
+Restart=always
+RestartSec=60
+StandardOutput=append:__DATA__/logs/agent.log
+StandardError=append:__DATA__/logs/agent.log
+
+[Install]
+WantedBy=default.target

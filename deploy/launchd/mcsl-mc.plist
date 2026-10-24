@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Keeps Morgen Commander running headless (no window) with the avatar logged in; MC logs it back in
+     if the grid drops it. Installed by deploy/install.sh --mc (fills in the data path and the avatar).
+     No auto-update here: MC restarting itself would clash with launchd restarting it. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.mcsl.__SLUG__.mc</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/Morgen Commander.app/Contents/MacOS/MorgenCommander</string>
+    <string>--headless</string>
+    <string>--login</string>
+    <string>__AVATAR__</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>__DATA__/logs/mc.log</string>
+  <key>StandardErrorPath</key><string>__DATA__/logs/mc.log</string>
+</dict>
+</plist>
