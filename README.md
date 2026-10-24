@@ -237,7 +237,10 @@ the AI, decides what's allowed:
   from Morgen Commander's own fields, never by a name or by text in a message.
 - **Narrow exceptions,** checked in code: accepting an owner's gift, a friend's
   dance invitation that only asks to animate, a friendship you approved in
-  advance (`[friendship] accept_from`).
+  advance (`[friendship] accept_from`), a teleport offer for a friend
+  (FRIENDS.md) who asks for one.
+- **Deny by default:** Morgen Commander tools the agent doesn't use (paying,
+  giving, updating MC, deleting…) are refused outright, even for owners.
 - **Secrets never leave:** every message and saved note is scanned, and
   anything that looks like a key or token is refused. The AI has no shell,
   file or web access.

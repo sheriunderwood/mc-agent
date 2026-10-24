@@ -74,7 +74,7 @@ READ_TOOLS = [t(n) for n in (
     "status", "events", "conversations", "read_chat", "nearby", "friends",
     "groups", "find_group", "group_info", "profile", "find_person",
     "gestures", "pending", "find_items", "list_folder", "wearing",
-    "find_place", "place", "parcel", "places",
+    "find_place", "place", "parcel", "places", "check_update",
 )]
 # Tools that do something in world: allowed unless --observe-only.
 ACT_TOOLS = [t(n) for n in (
@@ -106,6 +106,8 @@ MEMORY_ACTIONS = {f"mcp__{MEMORY}__install_script", f"mcp__{MEMORY}__give_to_own
 # Tools whose arguments leave this machine or get stored: scanned for secrets.
 OUTGOING = {t("say"), t("send"), t("send_im"), t("send_group"), t("answer")}
 SCANNED = OUTGOING | set(MEMORY_TOOLS) | {t("offer_teleport")}
+# Every Morgen Commander tool the model may use at all; the Guard denies any other.
+MC_TOOLS = set(READ_TOOLS + ACT_TOOLS + ADMIN_TOOLS + [t("login")])
 
 SYSTEM_PROMPT = """\
 You are an autonomous agent operating the Second Life avatar {avatar} through
@@ -1331,6 +1333,7 @@ class Guard:
         self.spoke: set[str] = set()   # people who wrote to us this tick
         self.region: set[str] = set()  # people in the region, from nearby this tick
         self.club_links: dict[tuple[str, str], float] = {}  # (uuid, kind) -> when club_link sent it
+        self.friend_tps: dict[str, float] = {}  # uuid -> when a friend's TP offer went out (is_friend_tp)
         self.sl_friends: set[str] = set()  # SL friends list, from the last friends call
         self.sl_friend_names: set[str] = set()
         self.dance_refusal = ""
@@ -1367,6 +1370,29 @@ class Guard:
 
     CLUB_LINK_AGAIN_S = 3600   # the same person, same kind: at most once an hour
     CLUB_LINK_PER_HOUR = 30    # everyone together: a cap, so alts can't make the avatar spam
+
+    FRIEND_TP_AGAIN_S = 600    # one TP offer to the same friend every 10 minutes at most
+
+    def is_friend_tp(self, name: str, args: dict) -> bool:
+        """A teleport offer (to where the avatar is) for someone in FRIENDS.md who
+        wrote to us this tick, e.g. a friend who's stuck and asks for a TP. Only
+        `to` (their UUID) and an optional message; never anyone blocked or who
+        asked not to be contacted; once every 10 minutes per friend. Anything
+        else stays the owner's call."""
+        if name != t("offer_teleport") or set(args) - {"to", "message"}:
+            return False
+        to = str(args.get("to", "")).strip().lower()
+        if not UUID_RE.fullmatch(to) or to not in _friend_rows() or to in blocked_uuids():
+            return False
+        if to not in self.spoke or _contact(to) == "do-not-contact":
+            return False
+        now = time.monotonic()
+        if now - self.friend_tps.get(to, -1e9) < self.FRIEND_TP_AGAIN_S:
+            self.dance_refusal = "You sent them a TP offer a few minutes ago; tell them to check for it."
+            return False
+        self.friend_tps[to] = now
+        log(f"friend TP: offering {to} a teleport (in FRIENDS.md, asked this tick)")
+        return True
 
     def check_club_link(self, args: dict) -> str | None:
         """Why club_link may not send this, or None. Anyone not blocked who wrote
@@ -1631,6 +1657,10 @@ class Guard:
             return deny("That contains a credential. Never send or store credentials.")
         if name in BLOCKED_TOOLS:
             return deny("Not available.")
+        if name.startswith(f"mcp__{SERVER}__") and name not in MC_TOOLS:
+            # The SDK's allowed list already refuses these (permission_mode "dontAsk");
+            # the Guard denies by default too, in case that ever changes.
+            return deny("Not available.")
         if name == t("login"):
             if self.observe_only:
                 return deny("Observe-only mode: don't log in, just REPORT.")
@@ -1648,7 +1678,8 @@ class Guard:
             return deny("Observe-only mode: don't act in world, just REPORT.")
         self.dance_refusal = ""
         if name in OWNER_ONLY and not self.owner_spoke and not self.is_dance_grant(name, args) \
-                and not self.is_owner_gift(name, args) and not self.is_approved_friendship(name, args):
+                and not self.is_owner_gift(name, args) and not self.is_approved_friendship(name, args) \
+                and not self.is_friend_tp(name, args):
             return deny(self.dance_refusal or "Only an owner can ask for this, by IM. REPORT it instead.")
         if name == f"mcp__{MEMORY}__dance" and (reason := self.check_dance(args)):
             return deny(reason)
