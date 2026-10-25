@@ -69,6 +69,7 @@ import config  # noqa: E402
 import agent   # noqa: E402
 
 assert config.DATA_DIR == DATA.resolve(), "the tests must run on their own data folder"
+REAL_LOG = agent.log                         # for the tests of log itself
 if not os.environ.get("TEST_LOG"):          # TEST_LOG=1 to see the agent's log lines
     agent.log = lambda *args, **kwargs: None
 

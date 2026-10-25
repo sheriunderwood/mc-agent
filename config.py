@@ -84,6 +84,9 @@ DEFAULTS = {
         "keychain_prefix": "mcsl-agent",   # macOS Keychain items <prefix>-anthropic-key and <prefix>-mc-token
         "desktop_server": "",              # fallback: the MC token from this Claude desktop MCP server's config
     },
+    "log": {
+        "mirror": "",          # also write each log line here, e.g. a console like "/dev/tty1" (config.local.toml)
+    },
     "friendship": {
         "accept_from": [],     # UUIDs whose friendship offers the avatar may accept without an owner
     },

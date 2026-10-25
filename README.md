@@ -196,6 +196,10 @@ deploy/install.sh --uninstall    # remove them again
   the agent go after `--`: `deploy/install.sh --agent -- --daily-budget 5`.
 - Logs: `logs/mc.log`, `logs/agent.log`, `logs/shop.log`, `logs/online.log` in
   the data folder.
+- **Watching the agent on a screen:** `[log] mirror = "/dev/tty1"` in
+  `config.local.toml` (this machine only) also writes each agent log line to
+  that console (or any file). The avatar's user must be allowed to write to
+  it; if it can't, the agent carries on without it.
 
 ## Optional: the dance HUD and the wearing HUD
 

@@ -297,11 +297,13 @@ def save_state(state: dict) -> None:
 
 
 LOG_DIR = DATA / "logs"
+LOG_MIRROR = config.get("log", "mirror") or ""   # [log] mirror: a console or file that gets each line too
 
 
 def log(line: str) -> None:
     """Print to the console and append to logs/agent-YYYY-MM-DD.log (a new file
-    each day, even while running). Secrets are redacted in both."""
+    each day, even while running), and to [log] mirror if set (e.g. /dev/tty1).
+    Secrets are redacted in all of them."""
     now = datetime.now()
     text = SECRETS.redact(line)
     print(f"{now:%H:%M:%S} {text}", flush=True)
@@ -311,6 +313,12 @@ def log(line: str) -> None:
             f.write(f"{now:%H:%M:%S} {text}\n")
     except OSError:
         pass
+    if LOG_MIRROR:
+        try:
+            with open(LOG_MIRROR, "a") as f:
+                f.write(f"{now:%H:%M:%S} {text}\n")
+        except OSError:
+            pass
 
 
 def report(line: str) -> None:
