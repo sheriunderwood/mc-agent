@@ -788,6 +788,7 @@ async def take_break(args):
 # any in the data folder's scripts/ (an avatar's extras; a same-named one there wins).
 SCRIPT_DIRS = (DATA / "scripts", HERE / "scripts")
 MC_CONN: dict = {}      # token and port, for the tools below that call MC directly
+LAST_OWNER_IM: dict = {}  # "uuid": the owner whose IM came in last (from_id, set by the Guard)
 
 
 def _repo_scripts() -> list[Path]:
@@ -1872,6 +1873,7 @@ class Guard:
                 if not self.owner_spoke:
                     log(f"owner IM from {ev.get('from_name')}: admin tools unlocked for this tick")
                 self.owner_spoke = True
+                LAST_OWNER_IM["uuid"] = sender      # who asked, for tools that answer them (e.g. a QA run's notes)
         return {}
 
 

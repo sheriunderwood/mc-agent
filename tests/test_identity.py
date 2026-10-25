@@ -65,6 +65,13 @@ class OwnerIM(unittest.TestCase):
         feed(self.g, t("events"), {"events": [im("")]})
         self.assertFalse(self.unlocked())
 
+    def test_last_owner_im_records_only_owners(self):
+        agent.LAST_OWNER_IM.clear()
+        feed(self.g, t("events"), {"events": [im(STRANGER, name="Owner Person"), im(FRIEND)]})
+        self.assertNotIn("uuid", agent.LAST_OWNER_IM)
+        feed(self.g, t("events"), {"events": [im(OWNER)]})
+        self.assertEqual(agent.LAST_OWNER_IM.get("uuid"), OWNER)
+
     def test_every_owner_only_tool_is_locked(self):
         for name in sorted(agent.OWNER_ONLY):
             with self.subTest(tool=name):
