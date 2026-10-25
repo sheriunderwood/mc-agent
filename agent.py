@@ -2367,7 +2367,10 @@ def wakes_agent(ev: dict, in_local_conversation: bool = False, crowded: bool = F
 def needs_smart_model(events: list[dict]) -> str | None:
     """Why these events need the smart model, or None for the chat model. "owner"
     only when nothing else does (the owner may be on the chat model), and only by
-    from_id, or owner_id for an object: never a UUID in the text."""
+    from_id, or owner_id for an object: never a UUID in the text. Sensitive words
+    count only from people: an object's text (a gesture's "spanks", a HUD's
+    chatter) isn't worth the smart model, and the Guard limits what any model
+    can do about it."""
     owners = owner_uuids()
     owner = False
     for ev in events:
@@ -2378,7 +2381,7 @@ def needs_smart_model(events: list[dict]) -> str | None:
         sender = str(ev.get("owner_id") if ev.get("object") else ev.get("from_id") or "").strip().lower()
         if sender and sender in owners:
             owner = True
-        if ev.get("type") == "chat" and TROUBLE_RE.search(str(ev.get("text", ""))):
+        if ev.get("type") == "chat" and not ev.get("object") and TROUBLE_RE.search(str(ev.get("text", ""))):
             return "sensitive words"
     return "owner" if owner else None
 
