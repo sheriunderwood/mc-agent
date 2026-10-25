@@ -76,14 +76,18 @@ def norm(s: str) -> str:
 
 
 def region_exists(region: str) -> bool | None:
-    """True/False from the map API, or None if the API couldn't be reached."""
+    """True/False from the map API, or None if it couldn't be reached or gave an
+    answer that is neither coordinates nor "no such region" (since 2026-10 it
+    answers "Invalid Capability ID." to everything; that isn't "gone")."""
     try:
         body = fetch(f"{MAP_API}?var=coords&sim_name={urllib.parse.quote(region)}")
     except (urllib.error.URLError, TimeoutError):
         return None
+    if "'x'" in body:
+        return True
     if "'error'" in body:
         return False
-    return "'x'" in body
+    return None
 
 
 def lookup(name: str) -> dict:
@@ -130,7 +134,7 @@ def verified_cell(region: str | None) -> str:
         return "—"
     ok = region_exists(region)
     return {True: f"✓ region up {date.today()}", False: f"✗ region gone {date.today()}",
-            None: "? map API unreachable"}[ok]
+            None: "? map API not answering"}[ok]
 
 
 def row_for(info: dict, source: str) -> str:
@@ -215,7 +219,11 @@ def verify_all() -> None:
             if not line.startswith("| ") or len(cells) < 7 or not (s := SLURL_RE.search(cells[INWORLD])):
                 continue
             region = urllib.parse.unquote(s.group(1)).replace("+", " ")
-            cells[REGION] = verified_cell(region)
+            cell = verified_cell(region)
+            if cell.startswith("?") and cells[REGION].strip() not in ("", "—"):
+                print(f"{path.name}: {cells[STORE].strip('| ')[:40]} → {cell}; kept {cells[REGION]}")
+                continue   # an unanswered check never overwrites a real result
+            cells[REGION] = cell
             lines[i], changed = " | ".join(cells), True
             print(f"{path.name}: {cells[STORE].strip('| ')[:40]} → {cells[REGION]}")
             time.sleep(1)
