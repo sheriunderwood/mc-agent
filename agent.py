@@ -1800,7 +1800,7 @@ class Guard:
             return {}, input_data
         if not isinstance(result, dict):
             return {}, input_data
-        hidden = wearing = 0
+        hidden = wearing = flicker = 0
         for key in ("events", "lines", "messages"):
             items = result.get(key)
             if not isinstance(items, list):
@@ -1810,6 +1810,9 @@ class Guard:
                 if isinstance(ev, dict) and ev.get("object") and str(ev.get("text", "")).startswith(WEARING_PREFIX):
                     wearing += 1                   # the wearing HUD's data: the program handles it
                     continue
+                if FLAPS.note(ev):
+                    flicker += 1                   # a friend's status flickering: the program reports it
+                    continue
                 local = isinstance(ev, dict) and (whole or (ev.get("type") == "chat"
                                                           and ev.get("conversation_kind") == "local"))
                 if self.crowd_filter and local and not local_line_kept(ev, self.local_partners):
@@ -1817,7 +1820,7 @@ class Guard:
                 else:
                     kept.append(ev)
             result[key] = kept
-        if not hidden and not wearing:
+        if not hidden and not wearing and not flicker:
             return {}, input_data
         if hidden:
             result["local_chat_hidden"] = (
@@ -1826,6 +1829,9 @@ class Guard:
                 f"you, are shown.")
         if wearing:
             result["wearing_hud_lines_hidden"] = f"{wearing} data lines from your wearing HUD (the program saves them)"
+        if flicker:
+            result["friend_flicker_hidden"] = (f"{flicker} online/offline notices from friends whose status keeps "
+                                               f"flickering (the program reports that itself; don't)")
         text = json.dumps(result, ensure_ascii=False)
         if hidden:
             log(f"crowd: hid {hidden} local chat lines from {name.rsplit('__', 1)[-1]}")
@@ -2301,6 +2307,64 @@ class WearingCollector:
 WEARING = WearingCollector()
 
 
+FLAP_WINDOW_S = 30 * 60   # a friend whose online status changes more than
+FLAP_CHANGES = 4          # this many times in this window is "flickering"
+FLAP_REPORT_S = 60 * 60   # the program reports a flickering friend at most once an hour
+
+
+class FriendFlaps:
+    """Friends whose online status keeps flipping (usually a flaky connection).
+    The first FLAP_CHANGES changes in FLAP_WINDOW_S go through as usual; after
+    that their online/offline notices don't wake the model and are taken out of
+    its events, and the program reports it itself, at most once an hour."""
+
+    def __init__(self):
+        self.changes: dict[str, list[float]] = {}   # friend id -> when their status changed
+        self.reported: dict[str, float] = {}
+        self.quiet_seqs: set[int] = set()            # events hidden from the model
+        self.seen_seqs: set[int] = set()             # counted already (the stream and events both feed it)
+
+    def note(self, ev: dict, now: float | None = None) -> bool:
+        """Feed a friend online/offline event; True if it should be kept quiet.
+        Each event (by seq) is counted once, whoever sees it first."""
+        if not isinstance(ev, dict) or ev.get("type") != "friend":
+            return False
+        key = str(ev.get("id") or "").strip().lower()
+        if not key:
+            return False
+        seq = ev.get("seq")
+        if isinstance(seq, int):
+            if seq in self.seen_seqs:
+                return seq in self.quiet_seqs
+            self.seen_seqs.add(seq)
+            if len(self.seen_seqs) > 2000:
+                self.seen_seqs = set(sorted(self.seen_seqs)[-1000:])
+        now = time.monotonic() if now is None else now
+        recent = [t for t in self.changes.get(key, []) if now - t < FLAP_WINDOW_S] + [now]
+        self.changes[key] = recent
+        if len(recent) <= FLAP_CHANGES:
+            return False
+        if isinstance(ev.get("seq"), int):
+            self.quiet_seqs.add(ev["seq"])
+            if len(self.quiet_seqs) > 2000:
+                self.quiet_seqs = set(sorted(self.quiet_seqs)[-1000:])
+        if now - self.reported.get(key, -1e9) >= FLAP_REPORT_S:
+            self.reported[key] = now
+            who = " ".join(str(ev.get("name") or ev.get("display_name") or ev.get("from")
+                               or "A friend").split())[:64]
+            report(f"{who}'s online status keeps flickering ({len(recent)} changes in "
+                   f"{FLAP_WINDOW_S // 60} min, likely their connection). The program stops "
+                   f"passing on each change; another note in an hour if it goes on.")
+        return True
+
+    def restarted(self) -> None:
+        self.quiet_seqs.clear()   # MC numbers events from 0 again
+        self.seen_seqs.clear()
+
+
+FLAPS = FriendFlaps()
+
+
 # ---------------------------------------------------------------- MC event stream
 
 # Local chat only wakes the model when it mentions the avatar, or it's part of the
@@ -2591,6 +2655,10 @@ class EventStream:
             ev = getter.result()
             if ev.get("type") != "restarted" and ev["seq"] <= cursor:
                 continue
+            if ev.get("type") == "restarted":
+                FLAPS.restarted()
+            if FLAPS.note(ev):
+                continue                           # a friend's status flickering: the program reports it
             batch.append(ev)
             if ev.get("type") in ("teleport", "login", "restarted"):
                 self.place_checked = -1e9          # somewhere new: look again
