@@ -83,7 +83,7 @@ ACT_TOOLS = [t(n) for n in (
 )]
 # Administrative tools: only usable in a tick where an owner IMed (see Guard).
 ADMIN_TOOLS = [t(n) for n in ("answer", "teleport", "offer_teleport", "send_group", "logout",
-                               "wear", "take_off")]
+                               "wear", "take_off", "offer_friendship")]
 # Never available.
 # Never available. (login is allowed, but only through the Guard's checks:
 # not during a break, and never with force.)
@@ -105,7 +105,7 @@ MEMORY_ACTIONS = {f"mcp__{MEMORY}__install_script", f"mcp__{MEMORY}__give_to_own
                   f"mcp__{MEMORY}__club_link"}
 # Tools whose arguments leave this machine or get stored: scanned for secrets.
 OUTGOING = {t("say"), t("send"), t("send_im"), t("send_group"), t("answer")}
-SCANNED = OUTGOING | set(MEMORY_TOOLS) | {t("offer_teleport")}
+SCANNED = OUTGOING | set(MEMORY_TOOLS) | {t("offer_teleport"), t("offer_friendship")}
 def _no_speak_channels() -> frozenset[int]:
     """config [chat] no_speak_channels as integers; anything else stops the agent
     (a typo here must not quietly open a channel that was meant to be shut)."""
@@ -1759,6 +1759,13 @@ class Guard:
                 and not self.is_owner_gift(name, args) and not self.is_approved_friendship(name, args) \
                 and not self.is_friend_tp(name, args):
             return deny(self.dance_refusal or "Only an owner can ask for this, by IM. REPORT it instead.")
+        if name == t("offer_friendship"):
+            # Owner-only (above). Never to someone blocked, by UUID or name, in any field.
+            who = {str(args.get(k) or "").strip().lower() for k in ("who", "to", "person", "uuid")} - {""}
+            if not who:
+                return deny("Say who to offer friendship to (their UUID or name).")
+            if who & blocked_uuids() or {norm_name(w) for w in who} & blocked_names():
+                return deny("That person is blocked. Never offer them friendship.")
         if name == f"mcp__{MEMORY}__dance" and (reason := self.check_dance(args)):
             return deny(reason)
         if name == f"mcp__{MEMORY}__club_link" and (reason := self.check_club_link(args)):
@@ -3083,7 +3090,7 @@ if __name__ == "__main__":
                    help="event stream: seconds to gather a burst of events before waking the model")
     p.add_argument("--ticks-per-session", type=int, default=15)
     p.add_argument("--max-turns", type=int, default=25, help="tool round trips allowed per tick")
-    p.add_argument("--max-per-minute", type=int, default=6, help="outgoing chat/IM rate limit")
+    p.add_argument("--max-per-minute", type=int, default=10, help="outgoing chat/IM rate limit")
     p.add_argument("--offline-sleep", type=int, default=300)
     try:
         asyncio.run(main(p.parse_args()))
