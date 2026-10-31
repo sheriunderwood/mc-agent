@@ -16,6 +16,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -1949,7 +1950,10 @@ def build_options(args, guard: Guard, tier: str = "smart") -> ClaudeAgentOptions
         model, effort = args.chat_model, args.chat_effort
     files = "\n\n".join((DATA / f).read_text() for f in PROMPT_FILES if (DATA / f).exists())
     allowed = READ_TOOLS + MEMORY_TOOLS + ([] if args.observe_only else ACT_TOOLS + ADMIN_TOOLS + [t("login")])
-    memory = create_sdk_mcp_server(MEMORY, tools=[recall_friend, remember_friend, set_friend_info, queue_question, update_question, block_person,
+    hidden = hidden_tools(MC_OFFERED, allowed)
+    log(f"{tier} session: the model sees {len(MC_OFFERED) - len(hidden)} of MC's tools"
+        if MC_OFFERED else f"{tier} session: MC's tool list unknown, so the model sees all of them")
+    memory =create_sdk_mcp_server(MEMORY, tools=[recall_friend, remember_friend, set_friend_info, queue_question, update_question, block_person,
                                            shopping_list, note_store, stores_to_visit, record_store_visit,
                                            take_break, list_repo_scripts,
                                            install_script,
@@ -1973,7 +1977,7 @@ def build_options(args, guard: Guard, tier: str = "smart") -> ClaudeAgentOptions
         strict_mcp_config=True,       # only our servers, not the user's other MCP config
         tools=[],                     # no built-in Claude Code tools (Bash, files, web)
         allowed_tools=allowed,
-        disallowed_tools=BLOCKED_TOOLS,
+        disallowed_tools=BLOCKED_TOOLS + hidden,    # unseen tools cost no prompt tokens
         permission_mode="dontAsk",    # anything not allowed is denied, never prompted
         setting_sources=[],           # ignore user/project settings and CLAUDE.md
         hooks={
@@ -2724,6 +2728,64 @@ async def refresh_sl_friends(guard: "Guard", token: str, port: int) -> None:
     log(f"SL friends list loaded ({len(guard.sl_friends)} friends)")
 
 
+# Every tool MC offers, by bare name, from its tools/list. The model sees every
+# tool a server offers unless it's in disallowed_tools (allowed_tools only skips
+# the permission prompt), and MC's full list is about 4 times the size of the
+# ones she may use, in every request. Empty until listed: then nothing is hidden,
+# as before (the Guard still refuses anything not allowed).
+MC_OFFERED: list[str] = []
+
+
+def list_mc_tools(token: str, timeout: float = 30) -> list[str] | None:
+    """The names from `MorgenCommander --mcp`'s tools/list, or None if it fails."""
+    try:
+        p = subprocess.Popen([MC_COMMAND, "--mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, env=dict(os.environ, MC_API_TOKEN=token))
+    except OSError as e:
+        log(f"couldn't list MC's tools ({type(e).__name__})")
+        return None
+    try:
+        out, _ = p.communicate(
+            "\n".join(json.dumps(m) for m in (
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                            "clientInfo": {"name": "mc-agent", "version": "1"}}},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})) + "\n",
+            timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        log("couldn't list MC's tools (no answer)")
+        return None
+    for line in out.splitlines():
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(msg, dict) and msg.get("id") == 2:
+            tools = (msg.get("result") or {}).get("tools")
+            if isinstance(tools, list):
+                names = [tl.get("name") for tl in tools if isinstance(tl, dict)]
+                return [n for n in names if isinstance(n, str) and re.fullmatch(r"[A-Za-z0-9_]+", n)]
+    log("couldn't list MC's tools (no tools/list answer)")
+    return None
+
+
+def refresh_mc_tools(token: str) -> None:
+    """Update MC_OFFERED, keeping the last good list if MC doesn't answer."""
+    names = list_mc_tools(token)
+    if names:
+        if sorted(names) != sorted(MC_OFFERED):
+            log(f"MC offers {len(names)} tools")
+        MC_OFFERED[:] = names
+
+
+def hidden_tools(mc_names: list[str], allowed: list[str]) -> list[str]:
+    """MC tools the model shouldn't see: every one not in `allowed`."""
+    keep = set(allowed)
+    return sorted({t(n) for n in mc_names} - keep)
+
+
 async def wait_for_mc(token: str, port: int, stop: asyncio.Event) -> tuple[int, bool] | None:
     """Wait until Morgen Commander's API answers. Returns (newest event, online),
     or None if stopped while waiting. Exits with a clear message if MC rejects
@@ -2890,6 +2952,7 @@ async def main(args) -> None:
         # (read_chat) and in the friends notes. Each model tier gets its own
         # session, opened the first time it's needed.
         await refresh_sl_friends(guard, token, port)
+        await asyncio.to_thread(refresh_mc_tools, token)     # an MC update may add tools
         async with contextlib.AsyncExitStack() as sessions:
             clients: dict[str, ClaudeSDKClient] = {}
             spent = {"chat": 0.0, "smart": 0.0, "local": 0.0}
@@ -3071,7 +3134,7 @@ if __name__ == "__main__":
     p.add_argument("--chat-backend", default="anthropic", choices=["anthropic", "ollama"],
                    help="where everyday chat ticks run (ollama: OLLAMA_URL, default http://localhost:11434)")
     p.add_argument("--chat-model", default="claude-haiku-5-5", help="chat model on the anthropic backend")
-    p.add_argument("--chat-effort", default="low", choices=["low", "medium", "high", "xhigh", "max"])
+    p.add_argument("--chat-effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
     p.add_argument("--ollama-model", default=None, help="chat model on the ollama backend (or OLLAMA_MODEL)")
     p.add_argument("--local-timeout", type=float, default=90,
                    help="seconds a tick on the local Ollama model may take before it's stopped and "
