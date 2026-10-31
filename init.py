@@ -24,19 +24,19 @@ TEMPLATES = CODE / "templates"
 FOLDERS = ("logs", "friends", "reports", "usage", "shopping", "wearing", "scripts", "extensions")
 
 
-def main() -> int:
-    target = Path(sys.argv[1]).expanduser().resolve() if len(sys.argv) > 1 else config.DATA_DIR
-    if target == CODE or CODE in target.parents:
-        print(f"Not inside the code folder ({CODE}): your data is kept apart from the code, "
-              f"so you can update or share the code without it. Pick another folder.")
-        return 1
+def inside_code(target: Path) -> bool:
+    return target == CODE or CODE in target.parents
+
+
+def make_folder(target: Path, with_config: bool = True) -> tuple[bool, list[Path], list[Path]]:
+    """Make the data folder and copy in what's missing: (new, added, kept)."""
     new = not target.exists()
     target.mkdir(parents=True, exist_ok=True)
     os.chmod(target, 0o700)                 # friends' notes and reports are private
     for name in FOLDERS:
         (target / name).mkdir(exist_ok=True)
 
-    copies = [(CODE / "config.example.toml", target / "config.toml")]
+    copies = [(CODE / "config.example.toml", target / "config.toml")] if with_config else []
     if TEMPLATES.is_dir():
         copies += [(src, target / src.relative_to(TEMPLATES))
                    for src in sorted(TEMPLATES.rglob("*")) if src.is_file()]
@@ -48,6 +48,16 @@ def main() -> int:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dst)
         added.append(dst.relative_to(target))
+    return new, added, kept
+
+
+def main() -> int:
+    target = Path(sys.argv[1]).expanduser().resolve() if len(sys.argv) > 1 else config.DATA_DIR
+    if inside_code(target):
+        print(f"Not inside the code folder ({CODE}): your data is kept apart from the code, "
+              f"so you can update or share the code without it. Pick another folder.")
+        return 1
+    new, added, kept = make_folder(target)
 
     print(f"{'Made' if new else 'Checked'} the data folder: {target}")
     for p in added:

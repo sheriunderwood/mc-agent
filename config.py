@@ -171,4 +171,4 @@ if __name__ == "__main__":
     slug = re.sub(r"[^a-z0-9.-]+", "-", (AVATAR or "").lower()).strip("-.") or "agent"   # for service labels
     print({"keychain_prefix": KEYCHAIN_PREFIX, "data_dir": str(DATA_DIR), "avatar": AVATAR, "avatar_slug": slug,
            "mc_command": MC_COMMAND, "keep_online": "yes" if KEEP_ONLINE else "no",
-           "secrets_file": str(SECRETS_FILE)}.get(wanted, ""))
+           "secrets_file": str(SECRETS_FILE), "config_file": str(CONFIG_FILE)}.get(wanted, ""))

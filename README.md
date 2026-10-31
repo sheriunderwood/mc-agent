@@ -115,6 +115,14 @@ Create it:
 It copies in starter files and never overwrites anything, so it's safe to run
 again. Then edit them, in this order:
 
+**Or let the first run do most of it.** If there's no `config.toml` yet, the
+first `./run.sh` sets the data folder up from the avatar Morgen Commander is
+connected to (log it in there first, standing at its home): its name and UUID
+and its home region, parcel and SLURL go into `config.toml`. If anyone is
+within 10 m, it lists them, numbered, and asks which one is the owner (0 for
+none). Then it stops, so you can check the files and start it again. Only the
+MC token is needed for this; the Anthropic key isn't.
+
 | File | What to put in it |
 |------|-------------------|
 | `config.toml` | Your avatar's **name and UUID**, your **home** region, parcel and SLURL, and the names people call it by. Every setting is explained in the file. |
@@ -277,8 +285,12 @@ run `init.py` again to pick up any new starter files.
 
 ## Troubleshooting
 
-- **"No config.toml in the data folder":** run `.venv/bin/python init.py`, or
-  set `MCSL_HOME` to your data folder.
+- **"No config.toml in the data folder":** run `./run.sh` once with the avatar
+  online in MC (it sets one up), or `.venv/bin/python init.py`, or set
+  `MCSL_HOME` to your data folder.
+- **"Can't set up yet":** the first run needs the avatar online in MC, with
+  its region known. It writes nothing until then; fix what it says and run
+  `./run.sh` again.
 - **"Morgen Commander rejected the API token":** make a new one (step 2) and
   store it again (step 5). On Linux with headless MC running, make it while
   the `mcsl-mc` service is running.

@@ -47,7 +47,15 @@ load_secret() {   # load_secret NAME keychain-suffix
   exit 1
 }
 
-load_secret ANTHROPIC_API_KEY anthropic-key
 load_secret MC_API_TOKEN mc-token
+
+# First run (no config.toml yet): set up the data folder from the avatar MC is
+# connected to, offer someone nearby as owner, then stop so it can be checked.
+if [[ ! -f "$(.venv/bin/python config.py config_file)" ]]; then
+  .venv/bin/python first_run.py
+  exit $?
+fi
+
+load_secret ANTHROPIC_API_KEY anthropic-key
 
 exec .venv/bin/python agent.py "$@"

@@ -9,7 +9,8 @@ set it up. Sheri Underwood owns this code; Morgen owns MC and its MCP server.
 - `agent.py`: the agent: the event loop, the tools it gives the model, and
   the **Guard** (`Guard.pre`), which decides what every action may do.
 - `config.py`: finds the data folder and reads `config.toml`; all defaults.
-- `init.py`, `templates/`: set up a new avatar's data folder.
+- `init.py`, `templates/`: set up a new avatar's data folder. `first_run.py`:
+  what `run.sh` does with no `config.toml` (fills it and OWNERS.md from MC).
 - `tools/`: helpers run on their own or by services (`check_mcp.py`,
   `keep_online.py`, `shop_lookup.py`, `usage_report.py`).
 - `scripts/`: the HUD LSL scripts, with `@@...@@` placeholders that
