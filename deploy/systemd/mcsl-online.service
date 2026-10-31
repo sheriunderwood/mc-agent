@@ -9,7 +9,7 @@ Description=Keep the avatar online (__AVATAR__)
 Type=oneshot
 WorkingDirectory=__CODE__
 Environment="MCSL_HOME=__DATA__"
-EnvironmentFile=-%h/.config/mcsl-agent/secrets.env
+EnvironmentFile=-%h/.config/mc-agent/secrets.env
 ExecStart="__CODE__/.venv/bin/python" "__CODE__/tools/keep_online.py"
 StandardOutput=append:__DATA__/logs/online.log
 StandardError=append:__DATA__/logs/online.log

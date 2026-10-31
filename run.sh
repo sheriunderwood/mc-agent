@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Starts the agent. Each secret (ANTHROPIC_API_KEY, MC_API_TOKEN) comes from:
 #   1. the environment, if it's set (systemd sets it from the secrets file), else
-#   2. ~/.config/mcsl-agent/secrets.env: KEY=value lines, readable only by you
+#   2. ~/.config/mc-agent/secrets.env: KEY=value lines, readable only by you
 #      (chmod 600). The usual place on Linux; works on macOS too. Else
 #   3. on macOS, the Keychain: items <prefix>-anthropic-key and <prefix>-mc-token,
 #      <prefix> being secrets.keychain_prefix in the data folder's config.toml.
@@ -22,7 +22,7 @@ set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PREFIX="$(.venv/bin/python config.py keychain_prefix)"
-SECRETS="${XDG_CONFIG_HOME:-$HOME/.config}/mcsl-agent/secrets.env"
+SECRETS="$(.venv/bin/python config.py secrets_file)"   # moves the old ~/.config/mcsl-agent there first
 
 if [[ -f "$SECRETS" ]] && [[ -n "$(find "$SECRETS" -perm -004 -o -perm -040 2>/dev/null)" ]]; then
   echo "Warning: $SECRETS can be read by other users. Fix it with: chmod 600 \"$SECRETS\"" >&2

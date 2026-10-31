@@ -8,8 +8,8 @@ anyone's data:
   order: $MCSL_HOME; the folder around the code's, if it holds config.toml
   and OWNERS.md (a checkout with the data around the code); or the user's own
   data folder: ~/Library/Application Support/mc-agent on macOS,
-  ~/.local/share/mc-agent on Linux ($XDG_DATA_HOME). `python init.py` sets
-  one up.
+  ~/.local/share/mc-agent on Linux ($XDG_DATA_HOME). The first ./run.sh
+  sets one up (first_run.py).
 - config.toml in it says who the avatar is and how the agent behaves there
   (see config.example.toml). Anything left out uses the defaults below.
 """
@@ -126,7 +126,31 @@ FRIENDSHIP_ACCEPT_FROM = {str(u).strip().lower() for u in get("friendship", "acc
 # Secrets on Linux (and anywhere without a Keychain): KEY=value lines in this
 # file, readable only by the avatar's user. systemd loads it into the agent's
 # environment (EnvironmentFile=); run.sh sources it when run by hand.
-SECRETS_FILE = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "mcsl-agent" / "secrets.env"
+_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+SECRETS_DIR = _CONFIG_HOME / APP_NAME
+OLD_SECRETS_DIR = _CONFIG_HOME / "mcsl-agent"      # before 2026-10-31 (the project's old name)
+
+
+def move_old_secrets_dir(new: Path = SECRETS_DIR, old: Path = OLD_SECRETS_DIR) -> Path:
+    """The folder that holds secrets.env. The first time something runs after
+    the rename, ~/.config/mcsl-agent becomes ~/.config/mc-agent, with a symlink
+    left at the old name: services installed before still name the old path
+    (EnvironmentFile=), and keep working until they're reinstalled. If the
+    move fails, the old folder stays in use."""
+    if new.exists() or not old.is_dir() or old.is_symlink():
+        return new if new.exists() or not old.is_dir() else old
+    try:
+        old.rename(new)
+    except OSError:
+        return new if new.exists() else old      # someone else just moved it, or it can't be moved
+    try:
+        old.symlink_to(new.name)                # relative: ~/.config/mcsl-agent -> mc-agent
+    except OSError:
+        pass
+    return new
+
+
+SECRETS_FILE = move_old_secrets_dir() / "secrets.env"
 _KEYCHAIN_NAMES = {"ANTHROPIC_API_KEY": "anthropic-key", "MC_API_TOKEN": "mc-token"}
 
 
