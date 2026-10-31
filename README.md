@@ -106,22 +106,21 @@ apart from the code, so you can update the code without touching them:
 
 (To use another folder, set `MCSL_HOME` to it. One data folder per avatar.)
 
-Create it:
+The first `./run.sh` creates it (after step 5, the secrets; only the MC token
+is needed for this). Log the avatar in in Morgen Commander first, standing at
+its home, and run it in a terminal:
 
-```bash
-.venv/bin/python init.py
-```
+- its name and UUID and its home region, parcel and SLURL go into
+  `config.toml`;
+- if anyone is within 10 m, it lists them, numbered, and asks which one is the
+  owner (0 for none), and adds that one to `OWNERS.md`;
+- the starter files below are copied in;
+- then it stops, so you can check the files. Start it again with `./run.sh`.
 
-It copies in starter files and never overwrites anything, so it's safe to run
-again. Then edit them, in this order:
+(`.venv/bin/python init.py` copies in only the starter files, without
+`config.toml`. It never overwrites anything, so it's safe to run again.)
 
-**Or let the first run do most of it.** If there's no `config.toml` yet, the
-first `./run.sh` sets the data folder up from the avatar Morgen Commander is
-connected to (log it in there first, standing at its home): its name and UUID
-and its home region, parcel and SLURL go into `config.toml`. If anyone is
-within 10 m, it lists them, numbered, and asks which one is the owner (0 for
-none). Then it stops, so you can check the files and start it again. Only the
-MC token is needed for this; the Anthropic key isn't.
+Then check or edit the files, in this order:
 
 | File | What to put in it |
 |------|-------------------|
@@ -149,12 +148,12 @@ security add-generic-password -a "$USER" -s mcsl-agent-anthropic-key -w
 security add-generic-password -a "$USER" -s mcsl-agent-mc-token -w
 ```
 
-**Linux:** in `~/.config/mcsl-agent/secrets.env`, readable only by you:
+**Linux:** in `~/.config/mc-agent/secrets.env`, readable only by you:
 
 ```bash
-mkdir -p ~/.config/mcsl-agent
-nano ~/.config/mcsl-agent/secrets.env      # two lines: ANTHROPIC_API_KEY=... and MC_API_TOKEN=...
-chmod 600 ~/.config/mcsl-agent/secrets.env
+mkdir -p ~/.config/mc-agent
+nano ~/.config/mc-agent/secrets.env      # two lines: ANTHROPIC_API_KEY=... and MC_API_TOKEN=...
+chmod 600 ~/.config/mc-agent/secrets.env
 ```
 
 (Either way, `ANTHROPIC_API_KEY` and `MC_API_TOKEN` set in the environment win.)
@@ -285,9 +284,9 @@ run `init.py` again to pick up any new starter files.
 
 ## Troubleshooting
 
-- **"No config.toml in the data folder":** run `./run.sh` once with the avatar
-  online in MC (it sets one up), or `.venv/bin/python init.py`, or set
-  `MCSL_HOME` to your data folder.
+- **"No config.toml in the data folder":** run `./run.sh` in a terminal with
+  the avatar online in MC (it sets one up), or set `MCSL_HOME` to your data
+  folder.
 - **"Can't set up yet":** the first run needs the avatar online in MC, with
   its region known. It writes nothing until then; fix what it says and run
   `./run.sh` again.

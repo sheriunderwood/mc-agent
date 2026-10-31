@@ -1,15 +1,15 @@
-"""Set up a data folder for the agent: one avatar's config, persona, rules,
-owners and friends, plus the folders the agent writes to.
+"""Set up a data folder for the agent: one avatar's persona, rules, owners
+and friends, plus the folders the agent writes to. Not config.toml: the first
+./run.sh writes that, asking the operator (first_run.py).
 
     .venv/bin/python init.py              the data folder config.py finds (see below)
     .venv/bin/python init.py DIR          a folder of your choice; then set MCSL_HOME=DIR
                                           for the agent (install.sh passes it to the services)
 
 The data folder is $MCSL_HOME, else ~/Library/Application Support/mc-agent on
-macOS, ~/.local/share/mc-agent on Linux. It copies in config.example.toml (as
-config.toml) and the starter files from templates/, and never overwrites a
-file that's already there, so running it again is safe: it only adds what's
-missing. Then edit the files it lists.
+macOS, ~/.local/share/mc-agent on Linux. It copies in the starter files from
+templates/, and never overwrites a file that's already there, so running it
+again is safe: it only adds what's missing. Then edit the files it lists.
 """
 
 import os
@@ -28,17 +28,17 @@ def inside_code(target: Path) -> bool:
     return target == CODE or CODE in target.parents
 
 
-def make_folder(target: Path, with_config: bool = True) -> tuple[bool, list[Path], list[Path]]:
-    """Make the data folder and copy in what's missing: (new, added, kept)."""
+def make_folder(target: Path) -> tuple[bool, list[Path], list[Path]]:
+    """Make the data folder and copy in the starter files it lacks: (new, added, kept)."""
     new = not target.exists()
     target.mkdir(parents=True, exist_ok=True)
     os.chmod(target, 0o700)                 # friends' notes and reports are private
     for name in FOLDERS:
         (target / name).mkdir(exist_ok=True)
 
-    copies = [(CODE / "config.example.toml", target / "config.toml")] if with_config else []
+    copies = []
     if TEMPLATES.is_dir():
-        copies += [(src, target / src.relative_to(TEMPLATES))
+        copies = [(src, target / src.relative_to(TEMPLATES))
                    for src in sorted(TEMPLATES.rglob("*")) if src.is_file()]
     added, kept = [], []
     for src, dst in copies:
@@ -69,12 +69,11 @@ def main() -> int:
               f"  export MCSL_HOME=\"{target}\"\n"
               f"(deploy/install.sh then passes it to the services.)")
     print("\nNext, edit these in the data folder:\n"
-          "  config.toml   your avatar's name and UUID, home region and parcel, keychain prefix\n"
-          "  OWNERS.md     your own UUID: only owners can give the agent orders\n"
           "  persona.md    who the avatar is and how it talks\n"
           "  RULES.md      how it behaves (read it: the defaults are careful)\n"
-          "Then add the secrets (README: \"Secrets\") and check the connection to\n"
-          "Morgen Commander: .venv/bin/python tools/check_mcp.py")
+          "Then add the secrets (README: \"Secrets\"), log the avatar in in Morgen Commander\n"
+          "(at its home), and run ./run.sh: the first time, it writes config.toml from MC\n"
+          "and asks who the owner is.")
     return 0
 
 

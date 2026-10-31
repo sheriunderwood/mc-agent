@@ -206,7 +206,7 @@ if (( want_mc )); then
   [[ -x "$MC_BIN" ]] || { err "Morgen Commander isn't at $MC_BIN. Set [mc] command in config.toml."; exit 1; }
 fi
 if (( want_mc || want_agent || want_online || want_shop )) && [[ ! -f "$DATA/config.toml" ]]; then
-  err "No config.toml in the data folder ($DATA). Set it up first: $CODE/run.sh (with the avatar online in MC) or $PY $CODE/init.py"
+  err "No config.toml in the data folder ($DATA). Set it up first: $CODE/run.sh in a terminal, with the avatar online in MC"
   exit 1
 fi
 if (( want_online )) && [[ "$KEEP_ONLINE" != yes ]]; then

@@ -190,6 +190,15 @@ class NothingWritten(unittest.TestCase):
         self.refused(call)
 
 
+class InitAlone(unittest.TestCase):
+    def test_init_never_writes_config(self):
+        target = Path(tempfile.mkdtemp(prefix="init-")) / "data"
+        new, added, _ = first_run.init.make_folder(target)
+        self.assertTrue(new)
+        self.assertFalse((target / "config.toml").exists())    # so the first ./run.sh still sets it up
+        self.assertIn(Path("OWNERS.md"), added)
+
+
 class Values(unittest.TestCase):
     def test_hostile_place_names_stay_strings(self):
         facts = {"name": "testavatar", "uuid": ME, "region": 'R"\n[x]', "parcel": "P\\\" = 1 #",

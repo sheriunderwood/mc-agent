@@ -210,7 +210,7 @@ def setup(target: Path, call, interactive: bool, ask=input, say=print) -> int:
         say(f"Can't set up yet: {e}\nNothing was written.")
         return 1
     text = config_text((init.CODE / "config.example.toml").read_text(), facts)
-    init.make_folder(target, with_config=False)
+    init.make_folder(target)
     (target / "config.toml").write_text(text)
     say(f"Set up the data folder {target} for {facts['name']} ({facts['uuid']}),\n"
         f"home: {facts['region']}" + (f", {facts['parcel']}" if facts["parcel"] else "")

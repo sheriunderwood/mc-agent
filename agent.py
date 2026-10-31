@@ -2898,8 +2898,8 @@ def add_spend(state: dict, usd: float, budget: float) -> None:
 async def main(args) -> None:
     global SECRETS
     if not config.CONFIG_FILE.is_file():
-        raise SystemExit(f"No config.toml in the data folder ({DATA}). Set one up with: "
-                         f"{HERE / '.venv/bin/python'} {HERE / 'init.py'}  (or set MCSL_HOME to yours)")
+        raise SystemExit(f"No config.toml in the data folder ({DATA}). Start the agent with "
+                         f"{HERE / 'run.sh'}: the first time, it sets one up (or set MCSL_HOME to yours)")
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise SystemExit("ANTHROPIC_API_KEY is not set in this shell.")
     token = mc_token()

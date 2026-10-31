@@ -1,6 +1,7 @@
-# Settings for one deployment of the agent. init.py copies this to config.toml
-# in your data folder ($MCSL_HOME, or ~/Library/Application Support/mc-agent on
-# macOS, ~/.local/share/mc-agent on Linux); fill it in there.
+# Settings for one deployment of the agent. The first ./run.sh copies this to
+# config.toml in your data folder ($MCSL_HOME, or ~/Library/Application
+# Support/mc-agent on macOS, ~/.local/share/mc-agent on Linux), filling in the
+# avatar and its home from Morgen Commander; change the rest there.
 # Anything you leave out uses the default shown here.
 #
 # Settings for one machine only (e.g. [mc] command, keep_online) go in
@@ -59,7 +60,7 @@ command = ""
 keep_online = false
 
 [secrets]
-# Linux: ~/.config/mcsl-agent/secrets.env with ANTHROPIC_API_KEY=... and
+# Linux: ~/.config/mc-agent/secrets.env with ANTHROPIC_API_KEY=... and
 # MC_API_TOKEN=... lines (chmod 600). macOS: Keychain items
 # <prefix>-anthropic-key and <prefix>-mc-token (see README, "Store the secrets").
 keychain_prefix = "mcsl-agent"
