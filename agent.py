@@ -84,7 +84,8 @@ ACT_TOOLS = [t(n) for n in (
 )]
 # Administrative tools: only usable in a tick where an owner IMed (see Guard).
 ADMIN_TOOLS = [t(n) for n in ("answer", "teleport", "offer_teleport", "send_group", "logout",
-                               "wear", "take_off", "offer_friendship", "start_conference", "sit_on_object")]
+                               "wear", "take_off", "offer_friendship", "start_conference", "sit_on_object",
+                               "update_profile")]
 # Never available.
 # Never available. (login is allowed, but only through the Guard's checks:
 # not during a break, and never with force.)
@@ -106,7 +107,8 @@ MEMORY_ACTIONS = {f"mcp__{MEMORY}__install_script", f"mcp__{MEMORY}__give_to_own
                   f"mcp__{MEMORY}__club_link"}
 # Tools whose arguments leave this machine or get stored: scanned for secrets.
 OUTGOING = {t("say"), t("send"), t("send_im"), t("send_group"), t("answer")}
-SCANNED = OUTGOING | set(MEMORY_TOOLS) | {t("offer_teleport"), t("offer_friendship"), t("start_conference")}
+SCANNED = OUTGOING | set(MEMORY_TOOLS) | {t("offer_teleport"), t("offer_friendship"), t("start_conference"),
+                                           t("update_profile")}
 def _no_speak_channels() -> frozenset[int]:
     """config [chat] no_speak_channels as integers; anything else stops the agent
     (a typo here must not quietly open a channel that was meant to be shut)."""
@@ -1492,6 +1494,22 @@ class Guard:
             return "Give only `object`: the object's UUID from nearby_objects, or its exact name."
         return None
 
+    PROFILE_TEXT = ("about", "first_life", "image", "first_life_image", "want_to", "want_to_text",
+                    "skills", "skills_text", "languages")
+
+    @staticmethod
+    def check_profile(args: dict) -> str | None:
+        """Why this update_profile is refused (it's owner-only too): only MC's
+        fields, text as text and in_search as true/false, and something to change."""
+        known = set(Guard.PROFILE_TEXT) | {"in_search"}
+        if not args or set(args) - known:
+            return f"update_profile takes only {', '.join(sorted(known))}, and at least one of them."
+        if any(not isinstance(args[k], str) for k in Guard.PROFILE_TEXT if k in args):
+            return "Profile fields are text."
+        if "in_search" in args and not isinstance(args["in_search"], bool):
+            return "in_search is true or false."
+        return None
+
     CLUB_LINK_AGAIN_S = 3600   # the same person, same kind: at most once an hour
     CLUB_LINK_PER_HOUR = 30    # everyone together: a cap, so alts can't make the avatar spam
 
@@ -1838,6 +1856,10 @@ class Guard:
             if reason := self.check_sit(args):
                 return deny(reason)
             log(f"SIT {args['object']}")
+        if name == t("update_profile"):
+            if reason := self.check_profile(args):
+                return deny(reason)
+            log(f"PROFILE {', '.join(sorted(args))}")
         if name == t("start_conference"):
             if reason := self.check_conference(args):
                 return deny(reason)
