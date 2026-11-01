@@ -84,7 +84,7 @@ ACT_TOOLS = [t(n) for n in (
 )]
 # Administrative tools: only usable in a tick where an owner IMed (see Guard).
 ADMIN_TOOLS = [t(n) for n in ("answer", "teleport", "offer_teleport", "send_group", "logout",
-                               "wear", "take_off", "offer_friendship")]
+                               "wear", "take_off", "offer_friendship", "start_conference")]
 # Never available.
 # Never available. (login is allowed, but only through the Guard's checks:
 # not during a break, and never with force.)
@@ -106,7 +106,7 @@ MEMORY_ACTIONS = {f"mcp__{MEMORY}__install_script", f"mcp__{MEMORY}__give_to_own
                   f"mcp__{MEMORY}__club_link"}
 # Tools whose arguments leave this machine or get stored: scanned for secrets.
 OUTGOING = {t("say"), t("send"), t("send_im"), t("send_group"), t("answer")}
-SCANNED = OUTGOING | set(MEMORY_TOOLS) | {t("offer_teleport"), t("offer_friendship")}
+SCANNED = OUTGOING | set(MEMORY_TOOLS) | {t("offer_teleport"), t("offer_friendship"), t("start_conference")}
 def _no_speak_channels() -> frozenset[int]:
     """config [chat] no_speak_channels as integers; anything else stops the agent
     (a typo here must not quietly open a channel that was meant to be shut)."""
@@ -1427,6 +1427,30 @@ class Guard:
                     return uuid
         return None
 
+    CONFERENCE_MAX = 10        # people in one conference the avatar starts
+
+    @staticmethod
+    def check_conference(args: dict) -> str | None:
+        """Why this start_conference may not go ahead (it's owner-only too): only
+        `people`, 2 to CONFERENCE_MAX of them, none blocked or do-not-contact, by
+        UUID or by name. Anything unreadable is refused."""
+        if set(args) - {"people"} or not isinstance(args.get("people"), str):
+            return "Give only `people`: their UUIDs or exact names, separated by commas."
+        people = [p.strip() for p in args["people"].split(",") if p.strip()]
+        if not 2 <= len(people) <= Guard.CONFERENCE_MAX:
+            return f"A conference needs 2 to {Guard.CONFERENCE_MAX} people."
+        friends = _friend_table()
+        blocked, blocked_n = blocked_uuids(), blocked_names()
+        for who in people:
+            uuid = who.lower() if UUID_RE.fullmatch(who.lower()) else next(
+                (u for u, row in friends.items()
+                 if norm_name(who) in (norm_name(row["Account name"]), norm_name(row["Display name"]))), None)
+            if (uuid and uuid in blocked) or norm_name(who) in {norm_name(n) for n in blocked_n}:
+                return "Someone on that list is blocked. Never invite them."
+            if uuid and _contact(uuid) == "do-not-contact":
+                return "Someone on that list asked not to be contacted. Tell the owner instead."
+        return None
+
     CLUB_LINK_AGAIN_S = 3600   # the same person, same kind: at most once an hour
     CLUB_LINK_PER_HOUR = 30    # everyone together: a cap, so alts can't make the avatar spam
 
@@ -1767,6 +1791,10 @@ class Guard:
                 return deny("Say who to offer friendship to (their UUID or name).")
             if who & blocked_uuids() or {norm_name(w) for w in who} & blocked_names():
                 return deny("That person is blocked. Never offer them friendship.")
+        if name == t("start_conference"):
+            if reason := self.check_conference(args):
+                return deny(reason)
+            log(f"CONFERENCE {args['people']}")
         if name == f"mcp__{MEMORY}__dance" and (reason := self.check_dance(args)):
             return deny(reason)
         if name == f"mcp__{MEMORY}__club_link" and (reason := self.check_club_link(args)):
