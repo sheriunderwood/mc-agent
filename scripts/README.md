@@ -113,6 +113,10 @@ on the Marketplace.
 What happens then:
 
 - **Only within 20 m**, so a crowded club doesn't mean dozens of scans.
+- **It keeps working where visitors' scripts are stopped** (no-script land, or
+  scripts for the land's group only), from 1.5.0: it takes controls, as the
+  Marketplace HUDs do, but passes every key and click through. Before 1.5.0 it
+  went silent there, and a scan waiting was only sent after leaving.
 - **At home** (the region and parcel in config.toml): it scans the avatar's own
   outfit a minute after it's attached, then each person who comes within 20 m,
   30 s later so their outfit has rezzed; nobody more than once an hour.

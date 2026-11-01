@@ -13,6 +13,11 @@
 //   an outfit takes a while to rez).
 // - Anywhere else it only scans when asked: "scan <name or uuid>".
 //
+// It takes controls (passing every key and click through), as the Marketplace
+// HUDs do: a script that has taken controls keeps running on land that stops
+// visitors' scripts (no-script, or scripts for the land's group only). For an
+// attachment the permission is granted without asking.
+//
 // Scripts can see what people have attached, the same as the "What is she
 // wearing?" HUDs on the Marketplace, but not their HUDs, and not system
 // clothing or body parts (BOM layers).
@@ -43,7 +48,7 @@
 //                          its chat's flood limit. Plain "debug" switches it on or off.
 // Answers come back as "wearing_hud: ...".
 
-string VERSION = "1.4.0";   // semantic version: see scripts/README.md
+string VERSION = "1.5.0";   // semantic version: see scripts/README.md
 integer CMD_CHANNEL = @@WEARING_CHANNEL@@;
 list OWNERS = [@@OWNERS@@];         // the avatar's owners' UUIDs (OWNERS.md), as strings
 string HOME_REGION = "@@HOME_REGION@@";
@@ -185,6 +190,7 @@ start()
     gOut = [];
     gNear = [];
     llListen(CMD_CHANNEL, "", NULL_KEY, "");
+    llRequestPermissions(llGetOwner(), PERMISSION_TAKE_CONTROLS);   // see run_time_permissions
     if (gAuto && atHome()) queue(llGetOwner(), SELF_SETTLE, "auto");   // the avatar's own outfit, once it's rezzed
     gLastPoll = llGetTime() - POLL + 5.0;                      // first look in 5 s
     llSetTimerEvent(TICK);
@@ -235,6 +241,17 @@ default
     {
         if (id != NULL_KEY) start();
         else llSetTimerEvent(0.0);
+    }
+
+    run_time_permissions(integer perm)
+    {
+        // Mouselook clicks only, and passed through: the avatar keeps every control.
+        // Taking any control is what keeps the script running where visitors' scripts stop.
+        if (perm & PERMISSION_TAKE_CONTROLS) llTakeControls(CONTROL_ML_LBUTTON, TRUE, TRUE);
+    }
+
+    control(key id, integer level, integer edge)
+    {
     }
 
     changed(integer change)
