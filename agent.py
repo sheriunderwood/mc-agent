@@ -85,7 +85,7 @@ ACT_TOOLS = [t(n) for n in (
 # Administrative tools: only usable in a tick where an owner IMed (see Guard).
 ADMIN_TOOLS = [t(n) for n in ("answer", "teleport", "offer_teleport", "send_group", "logout",
                                "wear", "take_off", "offer_friendship", "start_conference", "sit_on_object",
-                               "update_profile")]
+                               "touch_object", "update_profile")]
 # Never available.
 # Never available. (login is allowed, but only through the Guard's checks:
 # not during a break, and never with force.)
@@ -1487,8 +1487,8 @@ class Guard:
 
     @staticmethod
     def check_sit(args: dict) -> str | None:
-        """Why this sit_on_object is refused (it's owner-only too): only
-        `object`, a UUID or a name of reasonable length."""
+        """Why this sit_on_object or touch_object is refused (both are
+        owner-only too): only `object`, a UUID or a name of reasonable length."""
         obj = args.get("object")
         if set(args) - {"object"} or not isinstance(obj, str) or not obj.strip() or len(obj) > 100:
             return "Give only `object`: the object's UUID from nearby_objects, or its exact name."
@@ -1856,6 +1856,10 @@ class Guard:
             if reason := self.check_sit(args):
                 return deny(reason)
             log(f"SIT {args['object']}")
+        if name == t("touch_object"):
+            if reason := self.check_sit(args):
+                return deny(reason)
+            log(f"TOUCH {args['object']}")
         if name == t("update_profile"):
             if reason := self.check_profile(args):
                 return deny(reason)
