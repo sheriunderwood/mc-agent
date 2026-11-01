@@ -205,7 +205,9 @@ deploy/install.sh --uninstall    # remove them again
   the data folder.
 - **Watching the agent on a screen:** `[log] mirror = "/dev/tty1"` in
   `config.local.toml` (this machine only) also writes each agent log line to
-  that console (or any file). The avatar's user must be allowed to write to
+  that console (or any file), as `HH:MM:SS user:line` with the Unix user that
+  runs the agent, so several agents can share one screen (the log files keep
+  their format). The avatar's user must be allowed to write to
   it; if it can't, the agent carries on without it.
 
 ## Optional: the dance HUD and the wearing HUD

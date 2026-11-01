@@ -19,9 +19,21 @@ class LogMirror(unittest.TestCase):
                 mock.patch.object(agent, "SECRETS", agent.Secrets(SECRET)), mock.patch("builtins.print"):
             REAL_LOG(line)
 
-    def test_line_goes_to_the_mirror(self):
-        self.log("hello from the test", str(self.mirror))
-        self.assertRegex(self.mirror.read_text(), r"^\d\d:\d\d:\d\d hello from the test\n$")
+    def test_line_goes_to_the_mirror_with_the_user(self):
+        with mock.patch.object(agent, "MIRROR_USER", "lilith"):
+            self.log("hello from the test", str(self.mirror))
+        self.assertRegex(self.mirror.read_text(), r"^\d\d:\d\d:\d\d lilith:hello from the test\n$")
+
+    def test_log_file_keeps_its_format(self):
+        with mock.patch.object(agent, "MIRROR_USER", "lilith"):
+            self.log("only the screen changes", str(self.mirror))
+        files = sorted(agent.LOG_DIR.glob("agent-*.log"))
+        last = files[-1].read_text().splitlines()[-1]
+        self.assertRegex(last, r"^\d\d:\d\d:\d\d only the screen changes$")
+
+    def test_user_is_the_unix_one(self):
+        import pwd
+        self.assertEqual(agent.unix_user(), pwd.getpwuid(__import__("os").getuid()).pw_name)
 
     def test_secret_is_redacted(self):
         self.log(f"key is {SECRET}", str(self.mirror))

@@ -301,9 +301,22 @@ LOG_DIR = DATA / "logs"
 LOG_MIRROR = config.get("log", "mirror") or ""   # [log] mirror: a console or file that gets each line too
 
 
+def unix_user() -> str:
+    """Who runs the agent, e.g. "lilith": on a shared console, tells whose line it is."""
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_name
+    except (ImportError, KeyError, OSError):
+        return os.environ.get("USER") or os.environ.get("USERNAME") or "agent"
+
+
+MIRROR_USER = unix_user()
+
+
 def log(line: str) -> None:
     """Print to the console and append to logs/agent-YYYY-MM-DD.log (a new file
-    each day, even while running), and to [log] mirror if set (e.g. /dev/tty1).
+    each day, even while running), and to [log] mirror if set (e.g. /dev/tty1),
+    there as "HH:MM:SS user:line", since several agents may share one screen.
     Secrets are redacted in all of them."""
     now = datetime.now()
     text = SECRETS.redact(line)
@@ -317,7 +330,7 @@ def log(line: str) -> None:
     if LOG_MIRROR:
         try:
             with open(LOG_MIRROR, "a") as f:
-                f.write(f"{now:%H:%M:%S} {text}\n")
+                f.write(f"{now:%H:%M:%S} {MIRROR_USER}:{text}\n")
         except OSError:
             pass
 
