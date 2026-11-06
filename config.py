@@ -76,6 +76,10 @@ DEFAULTS = {
         "wearing_channel": 34337,
         "extra_commanders": [],  # UUIDs besides the avatar and owners who may command the dance HUD
     },
+    "rlv": {
+        "channel": 0,          # the avatar's RLV relay script's channel; 0: rlv_command is off
+        "partner": "",         # the one person (UUID, who agreed) it controls
+    },
     "mc": {
         "command": "",         # Morgen Commander's program; default: the usual place for this OS
         "keep_online": False,  # every 5 min, log the avatar back in if MC is up but it's offline (no break)

@@ -257,6 +257,10 @@ the AI, decides what's allowed:
 - **Channels it never speaks on:** list a script's command channel (an RLV
   relay prim's, say) in `[chat] no_speak_channels`, and the agent is refused
   on it, typed or not, whoever asks.
+- **RLV on one partner, optional:** `[rlv] channel` and `partner` (a UUID, someone
+  who agreed) turn on `rlv_command`. It reaches only that person, and only when an
+  owner or the partner IMs. List the channel in `no_speak_channels` too, so the
+  relay script is reachable only through this tool.
 - **Secrets never leave:** every message and saved note is scanned, and
   anything that looks like a key or token is refused. The AI has no shell,
   file or web access.
