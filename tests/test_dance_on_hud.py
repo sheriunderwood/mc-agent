@@ -1,6 +1,7 @@
 """dance_on_hud, spank and label_attachment: an owner asks the avatar to join
 someone's dance (touch the dance joiner they wear) or spank them (touch their
-spanker), and teaches it which attachment is which. Owner-only (by from_id);
+spanker), and teaches it which attachment is which (also tip jars, huggers and
+RLV things, which are never touched). Owner-only (by from_id);
 touching is refused in observe-only. The program finds the person and the
 attachment and grants a request to animate. Attachment names are the wearer's
 own text: they only help tell a dance joiner from a spanker (never a tip jar or
@@ -101,13 +102,16 @@ def label(oid, kind):
     return asyncio.run(agent.label_attachment.handler({"attachment": oid, "kind": kind}))["content"][0]["text"]
 
 
+def label_name(name, kind):
+    return asyncio.run(agent.label_attachment.handler({"name": name, "kind": kind}))["content"][0]["text"]
+
+
 class Clean(unittest.TestCase):
     """Each test starts with no lists and nothing listed."""
 
     def setUp(self):
-        for p in agent.WORN_FILES.values():
+        for p in (*agent.WORN_FILES.values(), agent.WORN_SEEN_FILE):
             p.unlink(missing_ok=True)
-        agent.WORN_SEEN.clear()
 
     tearDown = setUp
 
@@ -118,8 +122,9 @@ class Guarded(unittest.TestCase):
             self.assertIsNone(pre(owner_tick(), tool, {"who": "Sheri Underwood"}))
             self.assertIsNone(pre(owner_tick(), tool, {"who": SHERI, "attachment": JOINER}))
             self.assertIsNone(pre(owner_tick(), tool, {"who": "sheri", "attachment": ""}))
-        for kind in ("dancer", "spanker", "forget", "Spanker"):
+        for kind in ("dancer", "spanker", "tipjar", "hugger", "rlv", "nothing", "unknown", "forget", "Spanker"):
             self.assertIsNone(pre(owner_tick(), LABEL, {"attachment": JOINER, "kind": kind}))
+        self.assertIsNone(pre(owner_tick(), LABEL, {"name": "MOVE_REMOTE", "kind": "spanker"}))
 
     def test_no_owner_in_the_tick(self):
         for tool, args in ((DANCE, {"who": "Sheri"}), (SPANK, {"who": "Sheri"}),
@@ -166,9 +171,11 @@ class Guarded(unittest.TestCase):
                          {"who": "Sheri", "grant": True}):
                 self.assertIsNotNone(pre(g, tool, args), (tool, args))
         for args in ({}, {"attachment": JOINER}, {"kind": "dancer"}, {"attachment": "MOVE_REMOTE", "kind": "dancer"},
-                     {"attachment": JOINER, "kind": "hugger"}, {"attachment": JOINER, "kind": 1},
+                     {"attachment": JOINER, "kind": "pickpocket"}, {"attachment": JOINER, "kind": 1},
                      {"attachment": JOINER, "kind": "dancer", "name": "MOVE_REMOTE"},
-                     {"attachment": [JOINER], "kind": "dancer"}):
+                     {"attachment": [JOINER], "kind": "dancer"}, {"name": "", "kind": "dancer"},
+                     {"name": "  ", "kind": "dancer"}, {"name": 5, "kind": "dancer"},
+                     {"name": "x" * 201, "kind": "dancer"}, {"name": "MOVE_REMOTE", "kind": "dancer", "file": "x"}):
             self.assertIsNotNone(pre(g, LABEL, args), args)
 
     def test_observe_only(self):
@@ -184,8 +191,9 @@ class Guarded(unittest.TestCase):
             self.assertIn(tool, agent.MEMORY_TOOLS)
         self.assertIn(DANCE, agent.MEMORY_ACTIONS)
         self.assertIn(SPANK, agent.MEMORY_ACTIONS)
-        self.assertNotIn("DANCER.md", agent.PROMPT_FILES)     # wearers' text never reaches the prompt
-        self.assertNotIn("SPANKER.md", agent.PROMPT_FILES)
+        for p in agent.WORN_FILES.values():                  # wearers' text never reaches the prompt
+            self.assertNotIn(p.name, agent.PROMPT_FILES)
+        self.assertEqual(set(agent.WORN_TOUCH), {"dancer", "spanker"})
 
 
 class People(unittest.TestCase):
@@ -226,26 +234,45 @@ def kinds(atts):
     return {a["object_id"]: (a["kind"], a["known"]) for a in agent.classify_worn(atts)}
 
 
+def avoided(atts):
+    return {a["object_id"]: a["avoid"] for a in agent.classify_worn(atts)}
+
+
 class Classify(Clean):
     def test_by_name(self):
         self.assertEqual(kinds([MOVE, IDEZA, att("Valhalla rings", BADGE)]),
                          {JOINER: ("dancer", False), SPANKER: ("spanker", False), BADGE: ("other", False)})
+        self.assertEqual(kinds([att("DJ tip jar", BADGE), att("Hug HUD", JOINER2), att("RLV relay", SPANKER)]),
+                         {BADGE: ("tipjar", False), JOINER2: ("hugger", False), SPANKER: ("rlv", False)})
 
     def test_both_words_is_unclear(self):
         self.assertEqual(kinds([att("Dance Spanker 2000", SPANKER)]), {SPANKER: ("unclear", False)})
 
-    def test_things_to_avoid_are_never_listed(self):
+    def test_things_to_avoid_are_never_touchable(self):
         bad = [att("Couples dance HUD", SPANKER, description="RLV relay included"),
                att("DJ tip jar", SPANKER), att("Spank tipjar", SPANKER), att("Hug me dance", SPANKER),
                att("Leash dancer", SPANKER), att("dance joiner", SPANKER, description="Pay 10L to dance"),
                att("Whip spanker", SPANKER), att("Kiss me", SPANKER)]
-        self.assertEqual(agent.classify_worn(bad), [])
+        for a in agent.classify_worn(bad):
+            self.assertTrue(a["avoid"], a["name"])
+        self.assertEqual(agent.pick_worn(agent.classify_worn(bad), "dancer"), (None, [], False))
+        self.assertEqual(agent.pick_worn(agent.classify_worn(bad), "spanker"), (None, [], False))
 
     def test_teaching_never_overrides_avoiding(self):
         rlv = att("Spanker RLV edition", SPANKER)
-        agent.WORN_SEEN[SPANKER] = {"att": {**rlv, "kind": "spanker", "known": False}, "wearer": "x", "at": 1e12}
+        agent.worn_note(agent.classify_worn([rlv]), "x")
         label(SPANKER, "spanker")
-        self.assertEqual(agent.classify_worn([rlv]), [])
+        self.assertEqual(kinds([rlv]), {SPANKER: ("spanker", True)})
+        self.assertEqual(avoided([rlv]), {SPANKER: True})
+
+    def test_taught_avoid_kinds_are_avoided(self):
+        plain = att("Club badge", BADGE)
+        agent.worn_note(agent.classify_worn([plain]), "x")
+        for kind in ("tipjar", "hugger", "rlv", "nothing"):
+            label(BADGE, kind)
+            self.assertEqual(avoided([plain]), {BADGE: True}, kind)
+        label(BADGE, "forget")
+        self.assertEqual(avoided([plain]), {BADGE: False})
 
     def test_word_starts_only(self):
         self.assertEqual(kinds([att("Multiple dance joiner", JOINER)]), {JOINER: ("dancer", False)})
@@ -283,6 +310,15 @@ class Teach(Clean):
         run(w, who="Sheri")                           # taught as a spanker: never danced on
         self.assertEqual(w.touches(), [])
 
+    def test_every_kind_has_its_file(self):
+        self.list_it(att("Mystery HUD", BADGE))
+        for kind, file in (("tipjar", "TIPJARS.md"), ("hugger", "HUGGERS.md"), ("rlv", "RLVS.md"),
+                           ("dancer", "DANCER.md"), ("spanker", "SPANKER.md")):
+            label(BADGE, kind)
+            self.assertIn("Mystery HUD", (agent.DATA / file).read_text(), kind)
+            others = [p for k, p in agent.WORN_FILES.items() if k != kind and p.exists()]
+            self.assertFalse([p.name for p in others if "Mystery HUD" in p.read_text()], kind)
+
     def test_relabel_moves_it_and_forget_removes_it(self):
         self.list_it(att("Mystery HUD", BADGE))
         label(BADGE, "dancer")
@@ -294,26 +330,57 @@ class Teach(Clean):
         label(BADGE, "forget")
         self.assertEqual(kinds([att("Mystery HUD", BADGE)]), {BADGE: ("other", False)})
 
+    def test_label_later_by_name(self):
+        self.list_it(att("Mystery HUD v1.2", BADGE), MOVE)
+        self.assertIn("spanker", label_name("mystery hud", "spanker"))
+        self.assertEqual(kinds([att("Mystery HUD v1.3", JOINER2)]), {JOINER2: ("spanker", True)})
+
+    def test_same_name_two_creators_by_name_is_refused(self):
+        w = World(attachments=[att("Mystery HUD", BADGE), att("Mystery HUD", JOINER2, creator_id=STRANGER)])
+        run(w, who="Sheri")
+        self.assertIn("Several", label_name("Mystery HUD", "dancer"))
+        self.assertFalse(agent.WORN_FILES["dancer"].exists())
+
+    def test_dont_know_and_nothing_stop_the_asking(self):
+        w = World(attachments=[att("Mystery HUD", BADGE), att("Valhalla rings", JOINER2)])
+        self.assertIn("Not labelled yet", run(w, who="Sheri"))
+        label(BADGE, "unknown")
+        label(JOINER2, "nothing")
+        self.assertFalse(any(p.exists() for p in agent.WORN_FILES.values()))
+        w = World(attachments=[att("Mystery HUD", BADGE), att("Valhalla rings", JOINER2)])
+        text = run(w, who="Sheri")
+        self.assertNotIn("Not labelled yet", text)
+        self.assertNotIn(JOINER2, text)              # "nothing": not even a choice
+        label(BADGE, "forget")
+        self.assertIn("Not labelled yet", run(World(attachments=[att("Mystery HUD", BADGE)]), who="Sheri"))
+
     def test_lookalike_from_another_creator_isnt_known(self):
         self.list_it(att("Mystery HUD", BADGE))
         label(BADGE, "dancer")
         self.assertEqual(kinds([att("Mystery HUD v2", JOINER2)]), {JOINER2: ("dancer", True)})
         self.assertEqual(kinds([att("Mystery HUD", JOINER2, creator_id=STRANGER)]), {JOINER2: ("other", False)})
 
-    def test_label_only_what_was_listed(self):
-        self.assertIn("haven't listed", label(BADGE, "dancer"))
+    def test_label_only_what_was_seen(self):
+        self.assertIn("haven't seen", label(BADGE, "dancer"))
+        self.assertIn("haven't seen", label_name("MOVE_REMOTE", "dancer"))
         self.assertFalse(agent.WORN_FILES["dancer"].exists())
         self.list_it(MOVE, IDEZA)
-        agent.WORN_SEEN[JOINER]["at"] -= agent.WORN_SEEN_S + 1        # listed over an hour ago
-        self.assertIn("haven't listed", label(JOINER, "dancer"))
+        seen = agent.worn_seen()
+        for v in seen.values():
+            v["seen"] = "2020-01-01T00:00:00"                          # long ago
+        agent.WORN_SEEN_FILE.write_text(agent.json.dumps(seen))
+        self.assertIn("haven't seen", label(JOINER, "dancer"))
 
-    def test_avoided_things_are_never_listed_so_never_labelled(self):
+    def test_avoided_things_can_be_labelled_but_not_touched(self):
         self.list_it(att("DJ tip jar", BADGE), MOVE)
-        self.assertIn("haven't listed", label(BADGE, "spanker"))
+        self.assertIn("tip jar", label(BADGE, "tipjar"))
+        w = World(attachments=[att("DJ tip jar", BADGE)])
+        run(w, who="Sheri", attachment=BADGE)
+        self.assertEqual(w.touches(), [])
 
     def test_no_creator_uuid_saves_nothing(self):
         self.list_it(att("Mystery HUD", BADGE, creator_id=""))
-        self.assertIn("Nothing saved", label(BADGE, "dancer"))
+        self.assertIn("haven't seen", label(BADGE, "dancer"))
         self.assertFalse(agent.WORN_FILES["dancer"].exists())
 
     def test_names_cant_break_the_table(self):
@@ -330,6 +397,50 @@ class Teach(Clean):
                                                f"| MOVE_REMOTE | Maker | {MAKER}x | 2026-11-09 |\n")
         self.assertEqual(agent.worn_learned("spanker"), set())
         self.assertEqual(kinds([MOVE]), {JOINER: ("dancer", False)})
+
+    def test_broken_seen_file_fails_closed(self):
+        agent.WORN_SEEN_FILE.write_text("not json")
+        self.assertIn("haven't seen", label(BADGE, "dancer"))
+        self.assertEqual(kinds([MOVE]), {JOINER: ("dancer", False)})
+
+
+class Outfit(Clean):
+    """The model's own outfit calls: each touchable attachment gets a label, and
+    the ones to ask about are named; the seen store remembers them."""
+
+    def hook(self, result):
+        r = asyncio.run(guard().post({"tool_name": t("outfit"),
+                                      "tool_response": [{"type": "text", "text": agent.json.dumps(result)}]},
+                                     None, None))
+        out = r.get("hookSpecificOutput", {}).get("updatedMCPToolOutput")
+        return agent.json.loads(agent.tool_text(out)) if out else None
+
+    def test_labels_and_asks(self):
+        out = self.hook({"ok": True, "id": SHERI, "name": "Sheri Underwood",
+                         "attachments": [MOVE, IDEZA, att("Plain ring", BADGE, touchable=False)]})
+        labels = {a["object_id"]: a.get("label") for a in out["attachments"]}
+        self.assertIn("dance joiner", labels[JOINER])
+        self.assertIn("spanker", labels[SPANKER])
+        self.assertIsNone(labels[BADGE])                 # not touchable: nothing to say
+        self.assertIn(JOINER, out["ask_owner"])
+        self.assertIn("label_attachment", out["ask_owner"])
+        self.assertIn("haven't", label(BADGE, "dancer"))  # not touchable, so not remembered
+        self.assertIn("spanker", label(SPANKER, "spanker"))
+
+    def test_nothing_to_ask_when_all_taught(self):
+        self.hook({"ok": True, "id": SHERI, "attachments": [MOVE]})
+        label(JOINER, "dancer")
+        out = self.hook({"ok": True, "id": SHERI, "attachments": [MOVE]})
+        self.assertNotIn("ask_owner", out)
+        self.assertIn("taught", out["attachments"][0]["label"])
+
+    def test_other_tools_and_junk_untouched(self):
+        for result in ({"ok": False, "error": "No one called that"}, {"ok": True, "attachments": "junk"},
+                       {"ok": True, "attachments": [att("x", BADGE, touchable=False)]}):
+            self.assertIsNone(self.hook(result), result)
+        r = asyncio.run(guard().post({"tool_name": t("wearing"), "tool_response": [
+            {"type": "text", "text": agent.json.dumps({"attachments": [MOVE]})}]}, None, None))
+        self.assertEqual(r, {})
 
 
 class Grant(unittest.TestCase):
@@ -376,13 +487,19 @@ class Dance(Clean):
         self.assertEqual(w.touches(), [JOINER])
         self.assertEqual(w.answers(), [{"prompt": 7, "grant": True}])
 
+    def test_unlabelled_ones_are_named_to_ask(self):
+        w = World(attachments=[MOVE, att("Valhalla rings", BADGE)])
+        text = run(w, who="Sheri")
+        self.assertIn("Not labelled yet", text)
+        self.assertIn(BADGE, text)
+
     def test_taught_joiner_isnt_called_a_guess(self):
         run(World(attachments=[MOVE, att("Dance joiner", JOINER2)]), who="Sheri")
         label(JOINER, "dancer")
         w = World(attachments=[MOVE, att("Dance joiner", JOINER2)])
         text = run(w, who="Sheri")
         self.assertEqual(w.touches(), [JOINER])
-        self.assertNotIn("guessed", text)
+        self.assertTrue(text.startswith("Touched MOVE_REMOTE on Sheri Underwood, and granted"), text)
 
     def test_only_a_spanker(self):
         w = World(attachments=[IDEZA])

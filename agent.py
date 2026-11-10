@@ -22,7 +22,7 @@ import sys
 import time
 import traceback
 from collections import deque
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Annotated
@@ -1376,32 +1376,52 @@ async def dance(args):
 #
 # Attachment names and descriptions are the wearer's own text: they only help
 # decide what an attachment is, never who anyone is. What the owner has taught
-# (label_attachment) comes first: DANCER.md and SPANKER.md, matched by name
-# (without version numbers) *and* creator UUID, which MC sets, so a look-alike
-# from another creator isn't taken for a known one. Then words in the name.
-WORN_KINDS = {"dancer": "dance joiner", "spanker": "spanker"}
-WORN_FILES = {"dancer": DATA / "DANCER.md", "spanker": DATA / "SPANKER.md"}
-WORN_TITLES = {"dancer": "Dance joiners", "spanker": "Spankers"}
-WORN_WORDS = {"dancer": ("danc", "move_remote", "move remote", "move!", "moveanimations", "joiner"),
-              "spanker": ("spank", "slap", "smack", "swat", "paddl")}
-# Touchable attachments that do something else to you, or take things: never
-# touched or listed, whatever the owner taught. Matched at the start of a word
-# ("tipjar", "rlv"), so "multiple" isn't a tip jar.
-AVOID_WORDS = ("whip", "flog", "pinch", "grope", "grab", "bite", "kick", "punch", "tickle", "kiss", "hug",
-               "cuddle", "lick", "fondle", "rape", "abuse", "collar", "leash", "cuff", "gag", "rlv", "relay",
-               "restrain", "trap", "cage", "capture", "chain", "bondage", "tip", "jar", "donat", "pay",
-               "vendor", "give", "lure", "drug", "hypno", "poison", "weapon", "gun", "sword", "combat", "spy")
-AVOID_RE = re.compile(r"(?<![a-z0-9])(?:" + "|".join(map(re.escape, AVOID_WORDS)) + ")")
+# (label_attachment) comes first: one list per kind in the data folder, matched
+# by name (without version numbers) *and* creator UUID, which MC sets, so a
+# look-alike from another creator isn't taken for a known one. Then words in
+# the name. Only dance joiners and spankers are ever touched; tip jars, huggers
+# and RLV things are listed so the owner can label them, and always avoided.
+WORN_KINDS = {"dancer": "dance joiner", "spanker": "spanker", "tipjar": "tip jar",
+              "hugger": "hugger (hugs, kisses, cuddles)", "rlv": "RLV or restraint thing"}
+WORN_TOUCH = ("dancer", "spanker")              # the kinds dance_on_hud and spank touch
+WORN_FILES = {"dancer": DATA / "DANCER.md", "spanker": DATA / "SPANKER.md", "tipjar": DATA / "TIPJARS.md",
+              "hugger": DATA / "HUGGERS.md", "rlv": DATA / "RLVS.md"}
+WORN_TITLES = {"dancer": "Dance joiners", "spanker": "Spankers", "tipjar": "Tip jars", "hugger": "Huggers",
+               "rlv": "RLV and restraint things"}
+
+
+def _start_of_word(words) -> re.Pattern:
+    return re.compile(r"(?<![a-z0-9])(?:" + "|".join(map(re.escape, words)) + ")")
+
+
+# Words that suggest a kind. Dancer and spanker words match anywhere in the
+# name ("BootySpanker"); the others at the start of a word, so "multiple"
+# isn't a tip jar.
+WORN_WORDS = {"dancer": re.compile("|".join(map(re.escape, ("danc", "move_remote", "move remote", "move!",
+                                                             "moveanimations", "joiner")))),
+              "spanker": re.compile("|".join(map(re.escape, ("spank", "slap", "smack", "swat", "paddl")))),
+              "tipjar": _start_of_word(("tip", "jar", "donat", "pay")),
+              "hugger": _start_of_word(("hug", "cuddle", "kiss", "snuggle", "smooch")),
+              "rlv": _start_of_word(("rlv", "relay", "collar", "leash", "cuff", "restrain", "cage", "trap",
+                                     "capture", "bondage", "gag", "chain"))}
+# Never touched, whatever the owner taught: the avoided kinds' words, and more.
+AVOID_RE = _start_of_word(("whip", "flog", "pinch", "grope", "grab", "bite", "kick", "punch", "tickle", "kiss",
+                           "hug", "cuddle", "snuggle", "smooch", "lick", "fondle", "rape", "abuse", "collar",
+                           "leash", "cuff", "gag", "rlv", "relay", "restrain", "trap", "cage", "capture", "chain",
+                           "bondage", "tip", "jar", "donat", "pay", "vendor", "give", "lure", "drug", "hypno",
+                           "poison", "weapon", "gun", "sword", "combat", "spy"))
 VERSION_RE = re.compile(r"(?<![a-z0-9.])(?:v\d+(?:\.\d+)*|\d+(?:\.\d+)+)(?![a-z0-9.])")   # v2, v1.4, 1.7.1
 WORN_WAIT = {"dancer": 15.0, "spanker": 8.0}   # seconds to wait for a request to animate after the touch
-DANCE_HUD_WAIT = WORN_WAIT["dancer"]            # (kept for the tests and anyone reading the old name)
 WORN_LIST_MAX = 20                              # people or attachments listed in an answer
-WORN_SEEN_S = 3600                              # label_attachment: listed within the hour
-WORN_SEEN: dict[str, dict] = {}                 # object_id -> the attachment as listed, wearer, when
+# Every touchable attachment seen (by name and creator), on this machine only:
+# lets the owner label one later by name, and remembers "don't know" answers.
+WORN_SEEN_FILE = DATA / "worn-seen.json"
+WORN_SEEN_DAYS = 60                             # label_attachment: seen within this many days
+WORN_SEEN_MAX = 2000                            # entries kept, newest first
 
 
 def worn_cell(text) -> str:
-    """A name as it goes in DANCER.md / SPANKER.md: one line, no pipes, not too long."""
+    """A name as it goes in a list file: one line, no pipes, not too long."""
     return " ".join(str(text or "").replace("|", "/").split())[:120]
 
 
@@ -1412,22 +1432,64 @@ def worn_key(name) -> str:
     return " ".join(re.sub(r"[\s_\-]+", " ", n).split())
 
 
+def _worn_row_key(line: str) -> tuple[str, str] | None:
+    """A list file's table row's (name key, creator UUID), or None."""
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    if len(cells) >= 3 and cells[0] and UUID_RE.fullmatch(cells[2].lower()):
+        return worn_key(cells[0]), cells[2].lower()
+    return None
+
+
 def worn_learned(kind: str) -> set[tuple[str, str]]:
-    """(name key, creator UUID) pairs from DANCER.md or SPANKER.md. Rows without
-    a creator UUID don't count (fail closed)."""
-    out = set()
+    """(name key, creator UUID) pairs from a kind's list file. Rows without a
+    creator UUID don't count (fail closed)."""
     try:
         lines = WORN_FILES[kind].read_text().splitlines()
     except OSError:
-        return out
+        return set()
     return {k for k in map(_worn_row_key, lines) if k}
 
 
+def _worn_pair(a: dict) -> tuple[str, str]:
+    return worn_key(a.get("name")), str(a.get("creator_id", "")).lower()
+
+
+def worn_seen() -> dict:
+    """The seen store: "<name key>|<creator UUID>" -> what was last seen. {} if unreadable."""
+    try:
+        data = json.loads(WORN_SEEN_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def worn_note(classified: list[dict], wearer: str) -> None:
+    """Remember these attachments (touchable, with a creator UUID) in the seen store."""
+    seen, now = worn_seen(), datetime.now().isoformat(timespec="seconds")
+    for a in classified:
+        name, creator = _worn_pair(a)
+        if not UUID_RE.fullmatch(creator):
+            continue
+        old = seen.get(f"{name}|{creator}") if isinstance(seen.get(f"{name}|{creator}"), dict) else {}
+        seen[f"{name}|{creator}"] = {"name": worn_cell(a.get("name")), "creator": worn_cell(a.get("creator")),
+                                     "creator_id": creator, "object_id": a["object_id"],
+                                     "wearer": worn_cell(wearer), "seen": now, "answer": old.get("answer")}
+    keep = sorted(((k, v) for k, v in seen.items() if isinstance(v, dict)),
+                  key=lambda kv: str(kv[1].get("seen", "")), reverse=True)[:WORN_SEEN_MAX]
+    try:
+        WORN_SEEN_FILE.write_text(json.dumps(dict(keep), ensure_ascii=False, indent=1))
+    except OSError as e:
+        log(f"WORN couldn't save {WORN_SEEN_FILE.name}: {e}")
+
+
 def classify_worn(attachments) -> list[dict]:
-    """outfit's attachments that may be touched, each with `kind` (dancer,
-    spanker, unclear or other) and `known` (taught by the owner). Only touchable
-    ones with an object_id; anything to avoid is left out."""
+    """outfit's touchable attachments (with an object_id), each with `kind`
+    (one of WORN_KINDS, or unclear, or other), `known` (taught by the owner),
+    `avoid` (never touched: an avoided kind, or a word to avoid in its name or
+    description, whatever was taught, or the owner said it's nothing) and `asked`
+    (the owner answered "don't know" or "nothing": not asked again)."""
     learned = {k: worn_learned(k) for k in WORN_KINDS}
+    seen = worn_seen()
     out = []
     for a in attachments if isinstance(attachments, list) else []:
         if not isinstance(a, dict) or a.get("touchable") is not True:
@@ -1436,35 +1498,45 @@ def classify_worn(attachments) -> list[dict]:
         if not UUID_RE.fullmatch(oid):
             continue
         text = f"{a.get('name', '')} {a.get('description', '')}".lower()
-        if AVOID_RE.search(text):
-            continue
-        pair = (worn_key(a.get("name")), str(a.get("creator_id", "")).lower())
+        pair = _worn_pair(a)
         taught = [k for k in WORN_KINDS if pair in learned[k]]
         if len(taught) == 1:
             kind, known = taught[0], True
         else:
-            looks = [k for k in WORN_KINDS if any(w in text for w in WORN_WORDS[k])]
+            looks = [k for k in WORN_KINDS if WORN_WORDS[k].search(text)]
             kind, known = (looks[0] if len(looks) == 1 else "unclear" if looks or taught else "other"), False
-        out.append({**a, "object_id": oid, "kind": kind, "known": known})
+        entry = seen.get(f"{pair[0]}|{pair[1]}")
+        answer = entry.get("answer") if isinstance(entry, dict) else None
+        asked = answer in ("unknown", "nothing")
+        if answer == "nothing" and not known:
+            kind = "nothing"
+        avoid = bool(AVOID_RE.search(text)) or kind not in (*WORN_TOUCH, "unclear", "other")
+        out.append({**a, "object_id": oid, "kind": kind, "known": known, "avoid": avoid, "asked": asked})
     return out
 
 
 def pick_worn(classified: list[dict], kind: str) -> tuple[dict | None, list[dict], bool]:
     """(the attachment to touch, or None; the choices to list instead; whether
-    it was only guessed from its name). One the owner taught wins; else one
-    guessed from its name; else nothing, and every choice but those taught as
-    the other kind."""
-    known = [a for a in classified if a["kind"] == kind and a["known"]]
+    it was only guessed from its name). Never one to avoid. One the owner taught
+    wins; else one guessed from its name; else nothing, and every choice not
+    taught as something else."""
+    ok = [a for a in classified if not a["avoid"]]
+    known = [a for a in ok if a["kind"] == kind and a["known"]]
     if len(known) == 1:
         return known[0], [], False
     if known:
         return None, known, False
-    guessed = [a for a in classified if a["kind"] == kind]
+    guessed = [a for a in ok if a["kind"] == kind]
     if len(guessed) == 1:
         return guessed[0], [], True
     if guessed:
         return None, guessed, False
-    return None, [a for a in classified if not a["known"]], False
+    return None, [a for a in ok if not a["known"]], False
+
+
+def worn_to_ask(classified: list[dict]) -> list[dict]:
+    """The attachments to ask the owner about: not taught, and not answered "don't know"."""
+    return [a for a in classified if not a["known"] and not a["asked"]]
 
 
 def worn_grant_ok(ev: dict, wearer_id: str, wearer_names: set[str]) -> str | None:
@@ -1523,16 +1595,51 @@ def match_person(who: str, people: list[dict]) -> tuple[dict | None, list[dict]]
     return None, list({id(every[c]): every[c] for c in close}.values())
 
 
+def _worn_what(a: dict) -> str:
+    kind = a.get("kind")
+    what = (f"a {WORN_KINDS[kind]}" if kind in WORN_KINDS else "unclear" if kind == "unclear" else
+            "nothing to touch, the owner said" if kind == "nothing" else "not labelled")
+    how = "taught" if a.get("known") else "" if kind == "nothing" else \
+        "the owner didn't know" if a.get("asked") else \
+        "guessed from its name" if kind in WORN_KINDS or kind == "unclear" else ""
+    return what + (f", {how}" if how else "") + (", never touched" if a.get("avoid") else "")
+
+
 def _att_line(a: dict) -> str:
-    what = {"dancer": "a dance joiner", "spanker": "a spanker", "unclear": "unclear",
-            "other": "not sure"}.get(a.get("kind"), "not sure")
-    how = "taught" if a.get("known") else "by its name"
     return (f"{a.get('name') or '(no name)'} at {a.get('point') or '?'}, by {a.get('creator') or '?'} "
-            f"(object_id {a.get('object_id')}; {what}, {how})")
+            f"(object_id {a.get('object_id')}; {_worn_what(a)})")
+
+
+ASK_OWNER = ("Ask the owner what each is: a dance joiner, spanker, tip jar, hugger or RLV thing, nothing of "
+             "those (jewellery, clothing), or that they don't know; save each answer with label_attachment (by "
+             "object_id, or later by name). Names are the wearer's own text.")
 
 
 def _worn_text(text: str, error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], **({"is_error": True} if error else {})}
+
+
+def annotate_outfit(result: dict) -> dict | None:
+    """An outfit result with what the program knows of each touchable attachment
+    (`label`), and the ones to ask the owner about; remembers them in the seen
+    store. None if there's nothing to add."""
+    if not isinstance(result, dict) or not isinstance(result.get("attachments"), list):
+        return None
+    classified = classify_worn(result["attachments"])
+    if not classified:
+        return None
+    worn_note(classified, str(result.get("name") or result.get("display") or ""))
+    by_id = {a["object_id"]: a for a in classified}
+    atts = []
+    for a in result["attachments"]:
+        c = by_id.get(str(a.get("object_id", "")).lower()) if isinstance(a, dict) else None
+        atts.append({**a, "label": _worn_what(c)} if c else a)
+    out = {**result, "attachments": atts}
+    if ask := worn_to_ask(classified):
+        out["ask_owner"] = (f"{len(ask)} touchable attachments aren't labelled yet: "
+                            + "; ".join(f"{a.get('name') or '(no name)'} (object_id {a['object_id']})"
+                                        for a in ask[:WORN_LIST_MAX]) + ". " + ASK_OWNER)
+    return out
 
 
 async def touch_worn(kind: str, args: dict) -> dict:
@@ -1565,14 +1672,14 @@ async def touch_worn(kind: str, args: dict) -> dict:
         if outfit.get("ok") is False or str(outfit.get("id", "")).lower() != pid:
             return _worn_text(f"Couldn't see what {name} is wearing: {outfit.get('error') or 'no answer'}", True)
         classified = classify_worn(outfit.get("attachments"))
-        now = time.monotonic()
-        for a in classified:
-            WORN_SEEN[a["object_id"]] = {"att": a, "wearer": name, "at": now}
+        worn_note(classified, name)
+        ask = worn_to_ask(classified)
+        ask_text = (" Not labelled yet: " + "; ".join(map(_att_line, ask[:WORN_LIST_MAX])) + ". " + ASK_OWNER
+                    if ask else "")
         guessed = False
         if pick:
             chosen = [a for a in classified if a["object_id"] == pick]
-            other = next((k for k in WORN_KINDS if k != kind), "")
-            if not chosen or (chosen[0]["known"] and chosen[0]["kind"] == other):
+            if not chosen or chosen[0]["avoid"] or (chosen[0]["known"] and chosen[0]["kind"] != kind):
                 return _worn_text(f"{pick} isn't one of {name}'s touchable attachments that I may touch as a "
                                   f"{label}. Call again without `attachment` to see them.", True)
             target = chosen[0]
@@ -1584,12 +1691,12 @@ async def touch_worn(kind: str, args: dict) -> dict:
                 log(f"WORN {kind} {name}: {what}; touched nothing")
                 if not listed:
                     return _worn_text(f"{name} wears {what}, and nothing else touchable I may touch. "
-                                      "Nothing touched.")
+                                      "Nothing touched." + ask_text)
                 return _worn_text(
-                    f"{name} wears {what}. Touchable ones: " + "; ".join(map(_att_line, listed[:WORN_LIST_MAX]))
-                    + f". Nothing touched. Ask the owner which is the {label} (names are the wearer's own "
-                      "text), then call again with `attachment`. When the owner tells you what one is, "
-                      "save it with label_attachment.")
+                    f"{name} wears {what}. Touchable ones I may touch: "
+                    + "; ".join(map(_att_line, listed[:WORN_LIST_MAX]))
+                    + f". Nothing touched. Ask the owner which is the {label}, then call again with "
+                      "`attachment`." + ask_text)
         oid = target["object_id"]
         after = int((await mc_call(tok, port, "status", {})).get("last_event", 0))
         touched = await mc_call(tok, port, "touch_object", {"object": oid})
@@ -1597,9 +1704,9 @@ async def touch_worn(kind: str, args: dict) -> dict:
         if touched.get("ok") is False:
             return _worn_text(f"Couldn't touch it: {touched.get('error')}", True)
         done = f"Touched {target.get('name')} on {name}"
-        if guessed:
-            done += (f" (guessed from its name: once the owner says whether it's a {label}, save it with "
-                     f"label_attachment, object_id {oid})")
+        if guessed or not target["known"]:
+            done += (f" ({'guessed from its name' if guessed else 'the owner picked it'}: once the owner says "
+                     f"whether it's a {label}, save it with label_attachment, object_id {oid})")
         wearer_names = {norm_name(person.get(k, "")) for k in ("name", "display")} | {norm_name(outfit.get("name", ""))}
         wearer_names -= {""}
         deadline, seen = time.monotonic() + WORN_WAIT[kind], []
@@ -1623,14 +1730,14 @@ async def touch_worn(kind: str, args: dict) -> dict:
                 return _worn_text(f"{done}, and granted the request to animate you"
                                   + (": you're dancing with them" if kind == "dancer" else "")
                                   + ". (Already answered: don't answer it again.) To stop: whatever their HUD "
-                                    "says, or stop_animation.")
+                                    "says, or stop_animation." + ask_text)
     except (httpx2.HTTPError, OSError, ValueError, TypeError, KeyError) as e:
         return _worn_text(f"Couldn't reach MC ({type(e).__name__}).", True)
     tail = ("Seen: " + "; ".join(seen) + ". Those stay pending: the usual rules apply. " if seen else "")
     if kind == "spanker":
-        return _worn_text(f"{done}. " + tail)
+        return _worn_text(f"{done}. " + tail + ask_text)
     return _worn_text(f"{done}, but no request to animate you came within {int(WORN_WAIT[kind])} s that I "
-                      f"could grant. " + tail + "Tell the owner.")
+                      f"could grant. " + tail + "Tell the owner." + ask_text)
 
 
 @tool("dance_on_hud",
@@ -1639,8 +1746,9 @@ async def touch_worn(kind: str, args: dict) -> dict:
       "by IM (\"dance on hud Sheri Underwood\"). Give `who`: their name or UUID; they must be in the "
       "region. If the name matches several people, or nobody, it lists them: ask the owner which one. If "
       "it can't tell which attachment is the dance joiner, it lists their touchable attachments and "
-      "touches nothing: ask the owner, call it again with `attachment` set to the object_id they pick, "
-      "and save what they told you with label_attachment. It never touches tip jars, RLV or the like.",
+      "touches nothing: ask the owner, call it again with `attachment` set to the object_id they pick. "
+      "It never touches tip jars, huggers, RLV or the like. Attachments not labelled yet: ask the owner "
+      "what they are, and save the answer with label_attachment.",
       {"who": Annotated[str, "Their name or UUID"],
        "attachment": Annotated[str, "Only when this tool listed choices: the object_id the owner picked"]})
 async def dance_on_hud(args):
@@ -1653,7 +1761,8 @@ async def dance_on_hud(args):
       "region. If the name matches several people, or nobody, it lists them: ask the owner which one. If "
       "it can't tell which attachment is the spanker (a dance joiner is not one), it lists their touchable "
       "attachments and touches nothing: ask the owner, call it again with `attachment` set to the "
-      "object_id they pick, and save what they told you with label_attachment.",
+      "object_id they pick. Attachments not labelled yet: ask the owner what they are, and save the "
+      "answer with label_attachment.",
       {"who": Annotated[str, "Their name or UUID"],
        "attachment": Annotated[str, "Only when this tool listed choices: the object_id the owner picked"]})
 async def spank(args):
@@ -1665,51 +1774,71 @@ def _worn_rows(kind: str) -> list[str]:
         return WORN_FILES[kind].read_text().splitlines()
     except OSError:
         return [f"# {WORN_TITLES[kind]}", "",
-                f"What the owner said is a {WORN_KINDS[kind]}, for dance_on_hud and spank. The program "
-                "writes this (label_attachment); names are the wearer's own text. A name matches without "
-                "its version number, and only with the same creator UUID.", "",
+                f"What the owner said is a {WORN_KINDS[kind]}. The program writes this (label_attachment); "
+                "names are the wearer's own text. A name matches without its version number, and only with "
+                "the same creator UUID." + ("" if kind in WORN_TOUCH else " Never touched."), "",
                 "| Name | Creator | Creator UUID | Added |", "|------|---------|--------------|-------|"]
 
 
-def _worn_row_key(line: str) -> tuple[str, str] | None:
-    """A DANCER.md / SPANKER.md table row's (name key, creator UUID), or None."""
-    cells = [c.strip() for c in line.strip().strip("|").split("|")]
-    if len(cells) >= 3 and cells[0] and UUID_RE.fullmatch(cells[2].lower()):
-        return worn_key(cells[0]), cells[2].lower()
-    return None
+LABEL_KINDS = (*WORN_KINDS, "nothing", "unknown", "forget")
 
 
 @tool("label_attachment",
-      "Save what the owner told you an attachment is, so dance_on_hud and spank know it next time (in "
-      "DANCER.md or SPANKER.md). Only for an attachment one of those tools listed in the last hour, by its "
-      "object_id, and only when the owner says so, by IM. kind: dancer (a dance joiner), spanker, or "
-      "forget (neither: remove it from both lists).",
-      {"attachment": Annotated[str, "The object_id dance_on_hud or spank listed"],
-       "kind": Annotated[str, "dancer, spanker or forget"]})
+      "Save what the owner told you an attachment is, so you know it next time: dancer (a dance joiner), "
+      "spanker, tipjar, hugger (hugs, kisses, cuddles), rlv (RLV, relays, leashes, restraints), nothing "
+      "(none of those: jewellery, clothing; never touched, not asked again), unknown (the owner doesn't "
+      "know: not asked again) or forget (remove it from every list and ask again). Only when the "
+      "owner says so, by IM. Give the attachment by `attachment` (an object_id that outfit, dance_on_hud "
+      "or spank showed) or by `name` (its name as they showed it, e.g. when the owner reports back later).",
+      {"attachment": Annotated[str, "Its object_id, as shown"],
+       "name": Annotated[str, "Or its name, as shown (when the owner names it)"],
+       "kind": Annotated[str, "dancer, spanker, tipjar, hugger, rlv, nothing, unknown or forget"]})
 async def label_attachment(args):
-    oid = str(args.get("attachment", "")).strip().lower()
+    oid = str(args.get("attachment") or "").strip().lower()
+    by_name = worn_key(args.get("name") or "")
     kind = str(args.get("kind", "")).strip().lower()
-    seen = WORN_SEEN.get(oid)
-    if not seen or time.monotonic() - seen["at"] > WORN_SEEN_S:
-        return _worn_text("I haven't listed that attachment in the last hour. Call dance_on_hud or spank on "
-                          "them first, then label one it lists.", True)
-    a = seen["att"]
-    creator = str(a.get("creator_id", "")).lower()
+    if kind not in LABEL_KINDS:
+        return _worn_text("kind is " + ", ".join(LABEL_KINDS) + ".", True)
+    seen = worn_seen()
+    cutoff = (datetime.now() - timedelta(days=WORN_SEEN_DAYS)).isoformat(timespec="seconds")
+    recent = {k: v for k, v in seen.items() if isinstance(v, dict) and str(v.get("seen", "")) >= cutoff}
+    if oid:
+        hits = [k for k, v in recent.items() if v.get("object_id") == oid]
+    else:
+        hits = [k for k in recent if by_name and k.rsplit("|", 1)[0] == by_name]
+    if not hits:
+        return _worn_text(f"I haven't seen that attachment on anyone in the last {WORN_SEEN_DAYS} days. Scan them "
+                          "with outfit (or dance_on_hud or spank) first, then label one it shows.", True)
+    if len(hits) > 1:
+        return _worn_text("Several attachments by that name, from different creators: " + "; ".join(
+            f"{recent[k]['name']} by {recent[k]['creator']} (object_id {recent[k]['object_id']}, on "
+            f"{recent[k]['wearer']})" for k in hits[:WORN_LIST_MAX]) + ". Label one by its object_id.", True)
+    entry = recent[hits[0]]
+    key, creator = (worn_key(entry.get("name")), str(entry.get("creator_id", "")).lower())
     if not UUID_RE.fullmatch(creator):
-        return _worn_text("MC didn't give its creator's UUID, so I can't recognise it later. Nothing saved.", True)
-    key, done = (worn_key(a.get("name")), creator), []
-    for k in WORN_KINDS:
-        rows = _worn_rows(k)
-        keep = [r for r in rows if _worn_row_key(r) != key]
-        if k == kind:
-            keep.append(f"| {worn_cell(a.get('name')) or '(no name)'} | {worn_cell(a.get('creator'))} | {creator} "
-                        f"| {date.today()} |")
-        if keep != rows or k == kind:
-            WORN_FILES[k].write_text("\n".join(keep) + "\n")
-            done.append(WORN_FILES[k].name)
-    what = "forgotten" if kind == "forget" else f"saved as a {WORN_KINDS[kind]}"
-    log(f"WORN label {worn_cell(a.get('name'))} ({creator}) {what} ({', '.join(done) or 'no change'})")
-    return _worn_text(f"{worn_cell(a.get('name'))}, by {worn_cell(a.get('creator'))}: {what}"
+        return _worn_text("I don't have its creator's UUID, so I can't recognise it later. Nothing saved.", True)
+    entry["answer"] = kind if kind in ("unknown", "nothing") else None
+    seen[hits[0]] = entry
+    try:
+        WORN_SEEN_FILE.write_text(json.dumps(seen, ensure_ascii=False, indent=1))
+    except OSError as e:
+        return _worn_text(f"Couldn't save it ({type(e).__name__}).", True)
+    done = []
+    if kind != "unknown":                    # "nothing" and "forget" take it off every list
+        for k in WORN_KINDS:
+            rows = _worn_rows(k)
+            keep = [r for r in rows if _worn_row_key(r) != (key, creator)]
+            if k == kind:
+                keep.append(f"| {worn_cell(entry.get('name')) or '(no name)'} | {worn_cell(entry.get('creator'))} "
+                            f"| {creator} | {date.today()} |")
+            if keep != rows or k == kind:
+                WORN_FILES[k].write_text("\n".join(keep) + "\n")
+                done.append(WORN_FILES[k].name)
+    what = {"forget": "forgotten", "unknown": "noted: the owner doesn't know (I won't ask again)",
+            "nothing": "noted: nothing to touch (I won't ask again)"}.get(
+        kind, f"saved as a {WORN_KINDS.get(kind)}")
+    log(f"WORN label {entry.get('name')} ({creator}) {what} ({', '.join(done) or 'no list change'})")
+    return _worn_text(f"{entry.get('name')}, by {entry.get('creator')}: {what}"
                       + (f" ({', '.join(done)})." if done else "."))
 
 
@@ -2132,14 +2261,21 @@ class Guard:
 
     @staticmethod
     def check_label_attachment(args: dict) -> str | None:
-        """Why this label_attachment is refused (it's owner-only too): only an
-        object_id and a kind; the program looks the name up itself."""
-        oid, kind = args.get("attachment"), args.get("kind")
-        if set(args) - {"attachment", "kind"} or not isinstance(oid, str) \
-                or not UUID_RE.fullmatch(oid.strip().lower()):
-            return "Give `attachment`: an object_id dance_on_hud or spank listed."
-        if not isinstance(kind, str) or kind.strip().lower() not in (*WORN_KINDS, "forget"):
-            return "kind is dancer, spanker or forget."
+        """Why this label_attachment is refused (it's owner-only too): one
+        attachment, by object_id or by name (the program looks it up among what
+        it has seen and writes the name itself), and a kind."""
+        oid, name, kind = args.get("attachment"), args.get("name"), args.get("kind")
+        if set(args) - {"attachment", "name", "kind"}:
+            return "Give only `attachment` or `name`, and `kind`."
+        has_oid, has_name = oid not in (None, ""), name not in (None, "")
+        if has_oid == has_name:
+            return "Give the attachment by `attachment` (its object_id) or by `name`, not both."
+        if has_oid and not (isinstance(oid, str) and UUID_RE.fullmatch(oid.strip().lower())):
+            return "`attachment` is an object_id, as outfit showed it."
+        if has_name and not (isinstance(name, str) and name.strip() and len(name) <= 200):
+            return "`name` is the attachment's name, as outfit showed it."
+        if not isinstance(kind, str) or kind.strip().lower() not in LABEL_KINDS:
+            return "kind is " + ", ".join(LABEL_KINDS) + "."
         return None
 
     @staticmethod
@@ -2348,8 +2484,28 @@ class Guard:
 
     async def post(self, input_data, tool_use_id, context):
         hook_output, input_data = self.crowd_filtered(input_data)
+        if not hook_output:
+            hook_output, input_data = self.outfit_labelled(input_data)
         await self.watch(input_data)
         return hook_output
+
+    @staticmethod
+    def outfit_labelled(input_data) -> tuple[dict, dict]:
+        """An outfit result, with what the program knows of each touchable
+        attachment and the ones to ask the owner about (annotate_outfit)."""
+        if input_data.get("tool_name") != t("outfit"):
+            return {}, input_data
+        response = input_data.get("tool_response")
+        try:
+            out = annotate_outfit(json.loads(tool_text(response)))
+        except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+            return {}, input_data
+        if not out:
+            return {}, input_data
+        text = json.dumps(out, ensure_ascii=False)
+        return ({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                        "updatedMCPToolOutput": with_text(response, text)}},
+                {**input_data, "tool_response": text})
 
     def crowd_filtered(self, input_data) -> tuple[dict, dict]:
         """In a crowd, take the local chat lines the model shouldn't see out of

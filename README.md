@@ -13,10 +13,11 @@ Anthropic's Claude doing the talking:
   On an owner's IM ("dance on hud Sheri Underwood", "spank Sheri Underwood")
   it touches the dance joiner or spanker someone wears (MC 1.5.4 or later).
   The program tells them apart by what the owner taught it (`DANCER.md`,
-  `SPANKER.md` in the data folder, by name and creator UUID), else by their
-  names, and asks the owner when it can't tell; it never touches tip jars, RLV
-  or the like, and grants only a request to animate, from the wearer's own
-  object.
+  `SPANKER.md`, `TIPJARS.md`, `HUGGERS.md`, `RLVS.md` in the data folder, by
+  name and creator UUID), else by their names. It asks the agent to ask the
+  owner about anything touchable it doesn't know yet (`label_attachment`
+  saves the answer), never touches tip jars, huggers or RLV things, and grants
+  only a request to animate, from the wearer's own object.
 - **Notices** outfits with an optional "what are they wearing" HUD, and keeps a
   shopping list of stores people mention.
 - **Reports** what happened each day, and queues anything only you can decide
