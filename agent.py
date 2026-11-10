@@ -94,17 +94,18 @@ MEMORY_TOOLS = [f"mcp__{MEMORY}__{n}" for n in
                 ("recall_friend", "remember_friend", "set_friend_info", "queue_question", "update_question",
                  "block_person", "shopping_list", "note_store", "stores_to_visit", "record_store_visit",
                  "take_break", "list_repo_scripts", "install_script",
-                 "give_to_owner", "dance", "tidy_scripts", "scan_wearing", "club_link", "rlv_command",
-                 "request_approval", "list_approvals", "resolve_approval")]
+                 "give_to_owner", "dance", "dance_on_hud", "tidy_scripts", "scan_wearing", "club_link",
+                 "rlv_command", "request_approval", "list_approvals", "resolve_approval")]
 # Only usable in a tick where an owner IMed (see Guard).
 OWNER_ONLY = set(ADMIN_TOOLS) | {f"mcp__{MEMORY}__resolve_approval", f"mcp__{MEMORY}__record_store_visit",
                                   f"mcp__{MEMORY}__take_break",
                                   f"mcp__{MEMORY}__install_script", f"mcp__{MEMORY}__give_to_owner",
-                                  f"mcp__{MEMORY}__tidy_scripts", f"mcp__{MEMORY}__scan_wearing"}
+                                  f"mcp__{MEMORY}__tidy_scripts", f"mcp__{MEMORY}__scan_wearing",
+                                  f"mcp__{MEMORY}__dance_on_hud"}
 # Our tools that change things in-world or in the inventory (refused in observe-only).
 MEMORY_ACTIONS = {f"mcp__{MEMORY}__install_script", f"mcp__{MEMORY}__give_to_owner",
                   f"mcp__{MEMORY}__tidy_scripts", f"mcp__{MEMORY}__scan_wearing",
-                  f"mcp__{MEMORY}__club_link", f"mcp__{MEMORY}__rlv_command"}
+                  f"mcp__{MEMORY}__club_link", f"mcp__{MEMORY}__rlv_command", f"mcp__{MEMORY}__dance_on_hud"}
 # Tools whose arguments leave this machine or get stored: scanned for secrets.
 OUTGOING = {t("say"), t("send"), t("send_im"), t("send_group"), t("answer")}
 SCANNED = OUTGOING | set(MEMORY_TOOLS) | {t("offer_teleport"), t("offer_friendship"), t("start_conference"),
@@ -1360,6 +1361,207 @@ async def dance(args):
         cmd = action
     return {"content": [{"type": "text", "text": await dance_command(cmd)}]}
 
+
+# ---------------------------------------------------------------- dancing on someone's HUD
+
+# Joining someone's dance by touching what they wear (a dance joiner such as
+# MOVE_REMOTE): needs MC 1.5.4, where touch_object takes an attachment's
+# object_id from outfit. The program finds the person, picks the attachment and
+# grants the request to animate; the model only names the person (and, when
+# asked to choose, one object_id from the list this tool gave). Names and
+# descriptions of attachments are the wearer's own text: they only decide
+# which attachment looks like a dance joiner, never who anyone is.
+DANCE_HUD_WORDS = ("danc", "move_remote", "move remote", "move!", "moveanimations", "joiner")
+# Touchable attachments that do something else to you (or take things): never touched.
+# Matched at the start of a word ("spanker", "tipjar"), so "multiple" isn't a tip jar.
+NOT_DANCE_WORDS = ("spank", "slap", "smack", "whip", "paddle", "flog", "pinch", "grope", "grab", "bite",
+                   "kick", "punch", "tickle", "kiss", "hug", "cuddle", "lick", "fondle", "rape", "abuse",
+                   "collar", "leash", "cuff", "gag", "rlv", "relay", "restrain", "trap", "cage", "capture",
+                   "chain", "bondage", "tip", "jar", "donat", "pay", "vendor", "give",
+                   "lure", "drug", "hypno", "poison", "weapon", "gun", "sword", "combat", "spy")
+NOT_DANCE_RE = re.compile(r"(?<![a-z0-9])(?:" + "|".join(map(re.escape, NOT_DANCE_WORDS)) + ")")
+DANCE_HUD_WAIT = 15.0           # seconds to wait for the request to animate after the touch
+DANCE_HUD_LIST_MAX = 20         # people or attachments listed in an answer
+
+
+def _people_in(nearby: dict) -> list[dict]:
+    """nearby's people, only those with a UUID (fail closed on anything else)."""
+    people = nearby.get("people") if isinstance(nearby, dict) else None
+    return [p for p in people or [] if isinstance(p, dict) and UUID_RE.fullmatch(str(p.get("id", "")).lower())]
+
+
+def match_person(who: str, people: list[dict]) -> tuple[dict | None, list[dict]]:
+    """Find `who` (a UUID, account name or display name, or part of one) among
+    nearby's people. Returns (the one person, []) or (None, the choices: several
+    matches, or near-misses, or [] for none)."""
+    import difflib
+    want = who.strip().lower()
+    if UUID_RE.fullmatch(want):
+        hit = [p for p in people if str(p["id"]).lower() == want]
+        return (hit[0], []) if hit else (None, [])
+    n = norm_name(want)
+    names = {id(p): {norm_name(p.get("name", "")), norm_name(p.get("display", ""))} - {""} for p in people}
+    exact = [p for p in people if n in names[id(p)]]
+    if len(exact) == 1:
+        return exact[0], []
+    if exact:
+        return None, exact
+    part = [p for p in people if len(n) >= 3 and any(n in x for x in names[id(p)])]
+    if len(part) == 1:
+        return part[0], []
+    if part:
+        return None, part
+    every = {x: p for p in people for x in names[id(p)]}
+    close = difflib.get_close_matches(n, list(every), n=5, cutoff=0.6)
+    return None, list({id(every[c]): every[c] for c in close}.values())
+
+
+def dance_attachments(attachments) -> tuple[list[dict], list[dict]]:
+    """From outfit's attachments: (those that look like a dance joiner, the other
+    touchable ones that aren't anything to avoid). Only touchable ones with an
+    object_id; anything named like a spanker, a tip jar, RLV and the like is left
+    out of both, whatever else its name says."""
+    dance, other = [], []
+    for a in attachments if isinstance(attachments, list) else []:
+        if not isinstance(a, dict) or a.get("touchable") is not True:
+            continue
+        oid = str(a.get("object_id", "")).lower()
+        if not UUID_RE.fullmatch(oid):
+            continue
+        text = f"{a.get('name', '')} {a.get('description', '')}".lower()
+        if NOT_DANCE_RE.search(text):
+            continue
+        (dance if any(w in text for w in DANCE_HUD_WORDS) else other).append(a)
+    return dance, other
+
+
+def dance_hud_grant_ok(ev: dict, wearer_id: str, wearer_names: set[str]) -> str | None:
+    """Why this request may not be granted after our touch, or None. Only a
+    permission request that asks to animate us and nothing else, no L$, from an
+    object owned by the person whose attachment we touched: by owner_id when MC
+    gives it, else by owner_name (the grid's name for the object's owner, which
+    MC sets; never the object's own name). MC 1.5.4 gives no owner_id on
+    permission requests."""
+    if (ev.get("kind") or ev.get("type")) != "permission" or not isinstance(ev.get("id"), int):
+        return "not a permission request"
+    asks = ev.get("asks")
+    if not isinstance(asks, list) or not asks or not all(isinstance(x, str) for x in asks):
+        return "it doesn't say what it asks for"
+    words = " ".join(asks).lower()
+    if ev.get("asks_debit") is not False or "animat" not in words \
+            or any(w in words for w in Guard.RISKY_PERMISSIONS):
+        return f"it asks for more than animating you ({', '.join(asks)})"
+    if "owner_id" in ev:
+        if str(ev.get("owner_id", "")).lower() != wearer_id:
+            return "the object asking isn't theirs"
+        return None
+    owner = norm_name(ev.get("owner_name", ""))
+    if not owner or owner not in wearer_names:
+        return "the object asking isn't theirs"
+    return None
+
+
+def _att_line(a: dict) -> str:
+    return f"{a.get('name') or '(no name)'} at {a.get('point') or '?'} (object_id {a.get('object_id')})"
+
+
+def _dance_hud_text(text: str, error: bool = False) -> dict:
+    return {"content": [{"type": "text", "text": text}], **({"is_error": True} if error else {})}
+
+
+@tool("dance_on_hud",
+      "Join someone's dance by touching the dance joiner they wear (such as MOVE_REMOTE), as clicking it "
+      "in a viewer does; the program then grants the request to animate you. Only when an owner asks, "
+      "by IM (\"dance on hud Sheri Underwood\"). Give `who`: their name or UUID; they must be in the "
+      "region. If the name matches several people, or nobody, it lists them: ask the owner which one. If "
+      "it finds no dance joiner, or several, it lists their touchable attachments and touches nothing: "
+      "call it again with `attachment` set to the object_id the owner picks. It never touches spankers, "
+      "tip jars, RLV or the like.",
+      {"who": Annotated[str, "Their name or UUID"],
+       "attachment": Annotated[str, "Only when this tool listed choices: the object_id the owner picked"]})
+async def dance_on_hud(args):
+    who = " ".join(str(args.get("who", "")).split())[:100]
+    pick = str(args.get("attachment") or "").strip().lower()
+    if not who:
+        return _dance_hud_text("Who? Their name or UUID.", True)
+    if not MC_CONN:
+        return _dance_hud_text("Not connected to MC.", True)
+    tok, port = MC_CONN["token"], MC_CONN["port"]
+    try:
+        people = _people_in(await mc_call(tok, port, "nearby", {}))
+        person, choices = match_person(who, people)
+        if not person:
+            if choices:
+                return _dance_hud_text(f"\"{who}\" could be: " + "; ".join(
+                    f"{p.get('name')} ({p.get('display')}, {p.get('id')})" for p in choices[:DANCE_HUD_LIST_MAX])
+                    + ". Ask the owner which one, then call again with their UUID.")
+            return _dance_hud_text(f"Nobody called \"{who}\" in this region. In the region: " + (
+                "; ".join(f"{p.get('name')} ({p.get('display')})" for p in people[:DANCE_HUD_LIST_MAX])
+                or "nobody") + ".")
+        pid = str(person["id"]).lower()
+        name = str(person.get("name") or person.get("display") or pid)
+        if pid in blocked_uuids() or norm_name(name) in blocked_names():
+            return _dance_hud_text(f"{name} is blocked. Never touch what they wear.", True)
+        outfit = await mc_call(tok, port, "outfit", {"who": pid})
+        if outfit.get("ok") is False or str(outfit.get("id", "")).lower() != pid:
+            return _dance_hud_text(f"Couldn't see what {name} is wearing: {outfit.get('error') or 'no answer'}", True)
+        dance, other = dance_attachments(outfit.get("attachments"))
+        if pick:
+            chosen = [a for a in dance + other if str(a["object_id"]).lower() == pick]
+            if not chosen:
+                return _dance_hud_text(f"{pick} isn't one of {name}'s touchable attachments that I may touch. "
+                                       "Call again without `attachment` to see them.", True)
+            target = chosen[0]
+        elif len(dance) == 1:
+            target = dance[0]
+        else:
+            listed = (dance or other)[:DANCE_HUD_LIST_MAX]
+            what = "several dance joiners" if dance else "no dance joiner"
+            log(f"DANCE ON HUD {name}: {what}; touched nothing")
+            if not listed:
+                return _dance_hud_text(f"{name} wears {what}, and nothing else touchable I may touch. Nothing touched.")
+            return _dance_hud_text(
+                f"{name} wears {what}. Touchable ones: " + "; ".join(map(_att_line, listed))
+                + ". Nothing touched. Ask the owner which one (names are the wearer's own text), "
+                  "then call again with `attachment`.")
+        oid = str(target["object_id"]).lower()
+        after = int((await mc_call(tok, port, "status", {})).get("last_event", 0))
+        touched = await mc_call(tok, port, "touch_object", {"object": oid})
+        log(f"DANCE ON HUD touch {_att_line(target)} worn by {name} ({pid}) -> {json.dumps(touched)[:200]}")
+        if touched.get("ok") is False:
+            return _dance_hud_text(f"Couldn't touch it: {touched.get('error')}", True)
+        wearer_names = {norm_name(person.get(k, "")) for k in ("name", "display")} | {norm_name(outfit.get("name", ""))}
+        wearer_names -= {""}
+        deadline, seen = time.monotonic() + DANCE_HUD_WAIT, []
+        while (left := deadline - time.monotonic()) > 0:
+            r = await mc_call(tok, port, "events", {"after": after, "wait": round(min(left, 10), 1)})
+            for ev in r.get("events", []) if isinstance(r, dict) else []:
+                if not isinstance(ev, dict) or int(ev.get("seq", 0) or 0) <= after:
+                    continue
+                after = int(ev["seq"])
+                if (ev.get("kind") or ev.get("type")) not in ("permission", "menu"):
+                    continue
+                why = dance_hud_grant_ok(ev, pid, wearer_names)
+                if why:
+                    seen.append(f"#{ev.get('id')} from {ev.get('object_name')}: not granted, {why}")
+                    log(f"DANCE ON HUD prompt not granted ({why}): {json.dumps(ev)[:300]}")
+                    continue
+                granted = await mc_call(tok, port, "answer", {"prompt": ev["id"], "grant": True})
+                log(f"DANCE ON HUD granted #{ev['id']} from {ev.get('object_name')} -> {json.dumps(granted)[:200]}")
+                if granted.get("ok") is False:
+                    return _dance_hud_text(f"Touched {target.get('name')}, but granting its request failed: "
+                                           f"{granted.get('error')}", True)
+                return _dance_hud_text(f"Touched {target.get('name')} on {name}, and granted the request to "
+                                       f"animate you: you're dancing with them. (Already answered: don't answer "
+                                       f"it again.) To stop: whatever their HUD says, or stop_animation.")
+    except (httpx2.HTTPError, OSError, ValueError, TypeError, KeyError) as e:
+        return _dance_hud_text(f"Couldn't reach MC ({type(e).__name__}).", True)
+    return _dance_hud_text(f"Touched {target.get('name')} on {name}, but no request to animate you came within "
+                           f"{int(DANCE_HUD_WAIT)} s that I could grant. "
+                           + ("Seen: " + "; ".join(seen) + ". Those stay pending: the usual rules apply. "
+                              if seen else "")
+                           + "Tell the owner.")
+
 @tool("recall_friend",
       "Everything remembered about a person, by UUID: their FRIENDS.md entry and "
       "all their notes. Says so if you don't know them yet.",
@@ -1777,6 +1979,18 @@ class Guard:
             return "Call nearby first: they have to be in the region to be invited."
         return None
 
+    @staticmethod
+    def check_dance_on_hud(args: dict) -> str | None:
+        """Why this dance_on_hud is refused (it's owner-only too): only `who`, a
+        name or UUID of reasonable length, and optionally `attachment`, a UUID."""
+        who, pick = args.get("who"), args.get("attachment")
+        if set(args) - {"who", "attachment"} or not isinstance(who, str) or not who.strip() \
+                or len(who) > Guard.OUTFIT_WHO_MAX:
+            return "Give `who`: their name or UUID (and `attachment` only when the tool listed choices)."
+        if pick not in (None, "") and not (isinstance(pick, str) and UUID_RE.fullmatch(pick.strip().lower())):
+            return "`attachment` is an object_id this tool listed."
+        return None
+
     def is_owner_gift(self, name: str, args: dict) -> bool:
         """An inventory or teleport offer from an owner: the agent may accept it
         (an item into its usual folder or a named one) or decline it without
@@ -1944,6 +2158,10 @@ class Guard:
             log(f"CONFERENCE {args['people']}")
         if name == f"mcp__{MEMORY}__dance" and (reason := self.check_dance(args)):
             return deny(reason)
+        if name == f"mcp__{MEMORY}__dance_on_hud":
+            if reason := self.check_dance_on_hud(args):
+                return deny(reason)
+            log(f"DANCE ON HUD {args['who']}")
         if name == f"mcp__{MEMORY}__club_link" and (reason := self.check_club_link(args)):
             return deny(reason)
         if reason := self.check_contact(name, args):
@@ -2134,7 +2352,8 @@ def build_options(args, guard: Guard, tier: str = "smart") -> ClaudeAgentOptions
                                            shopping_list, note_store, stores_to_visit, record_store_visit,
                                            take_break, list_repo_scripts,
                                            install_script,
-                                           give_to_owner, dance, tidy_scripts, scan_wearing, club_link, rlv_command,
+                                           give_to_owner, dance, dance_on_hud, tidy_scripts, scan_wearing, club_link,
+                                           rlv_command,
                                            request_approval, list_approvals, resolve_approval]
                                     + (QA.TOOLS if QA else []))
     return ClaudeAgentOptions(
