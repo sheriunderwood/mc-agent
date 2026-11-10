@@ -11,6 +11,7 @@ Run:  .venv/bin/python agent.py [--observe-only] [--once] [--model ...]
 import argparse
 import asyncio
 import contextlib
+import difflib
 import importlib.util
 import json
 import os
@@ -94,18 +95,20 @@ MEMORY_TOOLS = [f"mcp__{MEMORY}__{n}" for n in
                 ("recall_friend", "remember_friend", "set_friend_info", "queue_question", "update_question",
                  "block_person", "shopping_list", "note_store", "stores_to_visit", "record_store_visit",
                  "take_break", "list_repo_scripts", "install_script",
-                 "give_to_owner", "dance", "dance_on_hud", "tidy_scripts", "scan_wearing", "club_link",
+                 "give_to_owner", "dance", "dance_on_hud", "spank", "label_attachment", "tidy_scripts", "scan_wearing", "club_link",
                  "rlv_command", "request_approval", "list_approvals", "resolve_approval")]
 # Only usable in a tick where an owner IMed (see Guard).
 OWNER_ONLY = set(ADMIN_TOOLS) | {f"mcp__{MEMORY}__resolve_approval", f"mcp__{MEMORY}__record_store_visit",
                                   f"mcp__{MEMORY}__take_break",
                                   f"mcp__{MEMORY}__install_script", f"mcp__{MEMORY}__give_to_owner",
                                   f"mcp__{MEMORY}__tidy_scripts", f"mcp__{MEMORY}__scan_wearing",
-                                  f"mcp__{MEMORY}__dance_on_hud"}
+                                  f"mcp__{MEMORY}__dance_on_hud", f"mcp__{MEMORY}__spank",
+                                  f"mcp__{MEMORY}__label_attachment"}
 # Our tools that change things in-world or in the inventory (refused in observe-only).
 MEMORY_ACTIONS = {f"mcp__{MEMORY}__install_script", f"mcp__{MEMORY}__give_to_owner",
                   f"mcp__{MEMORY}__tidy_scripts", f"mcp__{MEMORY}__scan_wearing",
-                  f"mcp__{MEMORY}__club_link", f"mcp__{MEMORY}__rlv_command", f"mcp__{MEMORY}__dance_on_hud"}
+                  f"mcp__{MEMORY}__club_link", f"mcp__{MEMORY}__rlv_command", f"mcp__{MEMORY}__dance_on_hud",
+                  f"mcp__{MEMORY}__spank"}
 # Tools whose arguments leave this machine or get stored: scanned for secrets.
 OUTGOING = {t("say"), t("send"), t("send_im"), t("send_group"), t("answer")}
 SCANNED = OUTGOING | set(MEMORY_TOOLS) | {t("offer_teleport"), t("offer_friendship"), t("start_conference"),
@@ -1362,26 +1365,131 @@ async def dance(args):
     return {"content": [{"type": "text", "text": await dance_command(cmd)}]}
 
 
-# ---------------------------------------------------------------- dancing on someone's HUD
+# ---------------------------------------------------------------- touching what someone wears
 
-# Joining someone's dance by touching what they wear (a dance joiner such as
-# MOVE_REMOTE): needs MC 1.5.4, where touch_object takes an attachment's
-# object_id from outfit. The program finds the person, picks the attachment and
-# grants the request to animate; the model only names the person (and, when
-# asked to choose, one object_id from the list this tool gave). Names and
-# descriptions of attachments are the wearer's own text: they only decide
-# which attachment looks like a dance joiner, never who anyone is.
-DANCE_HUD_WORDS = ("danc", "move_remote", "move remote", "move!", "moveanimations", "joiner")
-# Touchable attachments that do something else to you (or take things): never touched.
-# Matched at the start of a word ("spanker", "tipjar"), so "multiple" isn't a tip jar.
-NOT_DANCE_WORDS = ("spank", "slap", "smack", "whip", "paddle", "flog", "pinch", "grope", "grab", "bite",
-                   "kick", "punch", "tickle", "kiss", "hug", "cuddle", "lick", "fondle", "rape", "abuse",
-                   "collar", "leash", "cuff", "gag", "rlv", "relay", "restrain", "trap", "cage", "capture",
-                   "chain", "bondage", "tip", "jar", "donat", "pay", "vendor", "give",
-                   "lure", "drug", "hypno", "poison", "weapon", "gun", "sword", "combat", "spy")
-NOT_DANCE_RE = re.compile(r"(?<![a-z0-9])(?:" + "|".join(map(re.escape, NOT_DANCE_WORDS)) + ")")
-DANCE_HUD_WAIT = 15.0           # seconds to wait for the request to animate after the touch
-DANCE_HUD_LIST_MAX = 20         # people or attachments listed in an answer
+# Dancing on someone's HUD (touching the dance joiner they wear, such as
+# MOVE_REMOTE) and spanking them (touching their spanker). Needs MC 1.5.4,
+# where touch_object takes an attachment's object_id from outfit. The program
+# finds the person, picks the attachment and grants a request to animate; the
+# model only names the person (and, when asked to choose, one object_id from
+# the list the tool gave).
+#
+# Attachment names and descriptions are the wearer's own text: they only help
+# decide what an attachment is, never who anyone is. What the owner has taught
+# (label_attachment) comes first: DANCER.md and SPANKER.md, matched by name
+# (without version numbers) *and* creator UUID, which MC sets, so a look-alike
+# from another creator isn't taken for a known one. Then words in the name.
+WORN_KINDS = {"dancer": "dance joiner", "spanker": "spanker"}
+WORN_FILES = {"dancer": DATA / "DANCER.md", "spanker": DATA / "SPANKER.md"}
+WORN_TITLES = {"dancer": "Dance joiners", "spanker": "Spankers"}
+WORN_WORDS = {"dancer": ("danc", "move_remote", "move remote", "move!", "moveanimations", "joiner"),
+              "spanker": ("spank", "slap", "smack", "swat", "paddl")}
+# Touchable attachments that do something else to you, or take things: never
+# touched or listed, whatever the owner taught. Matched at the start of a word
+# ("tipjar", "rlv"), so "multiple" isn't a tip jar.
+AVOID_WORDS = ("whip", "flog", "pinch", "grope", "grab", "bite", "kick", "punch", "tickle", "kiss", "hug",
+               "cuddle", "lick", "fondle", "rape", "abuse", "collar", "leash", "cuff", "gag", "rlv", "relay",
+               "restrain", "trap", "cage", "capture", "chain", "bondage", "tip", "jar", "donat", "pay",
+               "vendor", "give", "lure", "drug", "hypno", "poison", "weapon", "gun", "sword", "combat", "spy")
+AVOID_RE = re.compile(r"(?<![a-z0-9])(?:" + "|".join(map(re.escape, AVOID_WORDS)) + ")")
+VERSION_RE = re.compile(r"(?<![a-z0-9.])(?:v\d+(?:\.\d+)*|\d+(?:\.\d+)+)(?![a-z0-9.])")   # v2, v1.4, 1.7.1
+WORN_WAIT = {"dancer": 15.0, "spanker": 8.0}   # seconds to wait for a request to animate after the touch
+DANCE_HUD_WAIT = WORN_WAIT["dancer"]            # (kept for the tests and anyone reading the old name)
+WORN_LIST_MAX = 20                              # people or attachments listed in an answer
+WORN_SEEN_S = 3600                              # label_attachment: listed within the hour
+WORN_SEEN: dict[str, dict] = {}                 # object_id -> the attachment as listed, wearer, when
+
+
+def worn_cell(text) -> str:
+    """A name as it goes in DANCER.md / SPANKER.md: one line, no pipes, not too long."""
+    return " ".join(str(text or "").replace("|", "/").split())[:120]
+
+
+def worn_key(name) -> str:
+    """Compare attachment names loosely: lowercase, without version numbers
+    ("MOVE!_AUTOMATIC_DANCEHUD_BLACK_1.3" and "_1.4" are the same HUD)."""
+    n = VERSION_RE.sub(" ", worn_cell(name).lower())
+    return " ".join(re.sub(r"[\s_\-]+", " ", n).split())
+
+
+def worn_learned(kind: str) -> set[tuple[str, str]]:
+    """(name key, creator UUID) pairs from DANCER.md or SPANKER.md. Rows without
+    a creator UUID don't count (fail closed)."""
+    out = set()
+    try:
+        lines = WORN_FILES[kind].read_text().splitlines()
+    except OSError:
+        return out
+    return {k for k in map(_worn_row_key, lines) if k}
+
+
+def classify_worn(attachments) -> list[dict]:
+    """outfit's attachments that may be touched, each with `kind` (dancer,
+    spanker, unclear or other) and `known` (taught by the owner). Only touchable
+    ones with an object_id; anything to avoid is left out."""
+    learned = {k: worn_learned(k) for k in WORN_KINDS}
+    out = []
+    for a in attachments if isinstance(attachments, list) else []:
+        if not isinstance(a, dict) or a.get("touchable") is not True:
+            continue
+        oid = str(a.get("object_id", "")).lower()
+        if not UUID_RE.fullmatch(oid):
+            continue
+        text = f"{a.get('name', '')} {a.get('description', '')}".lower()
+        if AVOID_RE.search(text):
+            continue
+        pair = (worn_key(a.get("name")), str(a.get("creator_id", "")).lower())
+        taught = [k for k in WORN_KINDS if pair in learned[k]]
+        if len(taught) == 1:
+            kind, known = taught[0], True
+        else:
+            looks = [k for k in WORN_KINDS if any(w in text for w in WORN_WORDS[k])]
+            kind, known = (looks[0] if len(looks) == 1 else "unclear" if looks or taught else "other"), False
+        out.append({**a, "object_id": oid, "kind": kind, "known": known})
+    return out
+
+
+def pick_worn(classified: list[dict], kind: str) -> tuple[dict | None, list[dict], bool]:
+    """(the attachment to touch, or None; the choices to list instead; whether
+    it was only guessed from its name). One the owner taught wins; else one
+    guessed from its name; else nothing, and every choice but those taught as
+    the other kind."""
+    known = [a for a in classified if a["kind"] == kind and a["known"]]
+    if len(known) == 1:
+        return known[0], [], False
+    if known:
+        return None, known, False
+    guessed = [a for a in classified if a["kind"] == kind]
+    if len(guessed) == 1:
+        return guessed[0], [], True
+    if guessed:
+        return None, guessed, False
+    return None, [a for a in classified if not a["known"]], False
+
+
+def worn_grant_ok(ev: dict, wearer_id: str, wearer_names: set[str]) -> str | None:
+    """Why this request may not be granted after our touch, or None. Only a
+    permission request that asks to animate us and nothing else, no L$, from an
+    object owned by the person whose attachment we touched: by owner_id when MC
+    gives it, else by owner_name (the grid's name for the object's owner, which
+    MC sets; never the object's own name). MC 1.5.4 gives no owner_id on
+    permission requests."""
+    if (ev.get("kind") or ev.get("type")) != "permission" or not isinstance(ev.get("id"), int):
+        return "not a permission request"
+    asks = ev.get("asks")
+    if not isinstance(asks, list) or not asks or not all(isinstance(x, str) for x in asks):
+        return "it doesn't say what it asks for"
+    words = " ".join(asks).lower()
+    if ev.get("asks_debit") is not False or "animat" not in words \
+            or any(w in words for w in Guard.RISKY_PERMISSIONS):
+        return f"it asks for more than animating you ({', '.join(asks)})"
+    if "owner_id" in ev:
+        return None if str(ev.get("owner_id", "")).lower() == wearer_id else "the object asking isn't theirs"
+    owner = norm_name(ev.get("owner_name", ""))
+    return None if owner and owner in wearer_names else "the object asking isn't theirs"
+
+
+dance_hud_grant_ok = worn_grant_ok
 
 
 def _people_in(nearby: dict) -> list[dict]:
@@ -1394,7 +1502,6 @@ def match_person(who: str, people: list[dict]) -> tuple[dict | None, list[dict]]
     """Find `who` (a UUID, account name or display name, or part of one) among
     nearby's people. Returns (the one person, []) or (None, the choices: several
     matches, or near-misses, or [] for none)."""
-    import difflib
     want = who.strip().lower()
     if UUID_RE.fullmatch(want):
         hit = [p for p in people if str(p["id"]).lower() == want]
@@ -1416,123 +1523,86 @@ def match_person(who: str, people: list[dict]) -> tuple[dict | None, list[dict]]
     return None, list({id(every[c]): every[c] for c in close}.values())
 
 
-def dance_attachments(attachments) -> tuple[list[dict], list[dict]]:
-    """From outfit's attachments: (those that look like a dance joiner, the other
-    touchable ones that aren't anything to avoid). Only touchable ones with an
-    object_id; anything named like a spanker, a tip jar, RLV and the like is left
-    out of both, whatever else its name says."""
-    dance, other = [], []
-    for a in attachments if isinstance(attachments, list) else []:
-        if not isinstance(a, dict) or a.get("touchable") is not True:
-            continue
-        oid = str(a.get("object_id", "")).lower()
-        if not UUID_RE.fullmatch(oid):
-            continue
-        text = f"{a.get('name', '')} {a.get('description', '')}".lower()
-        if NOT_DANCE_RE.search(text):
-            continue
-        (dance if any(w in text for w in DANCE_HUD_WORDS) else other).append(a)
-    return dance, other
-
-
-def dance_hud_grant_ok(ev: dict, wearer_id: str, wearer_names: set[str]) -> str | None:
-    """Why this request may not be granted after our touch, or None. Only a
-    permission request that asks to animate us and nothing else, no L$, from an
-    object owned by the person whose attachment we touched: by owner_id when MC
-    gives it, else by owner_name (the grid's name for the object's owner, which
-    MC sets; never the object's own name). MC 1.5.4 gives no owner_id on
-    permission requests."""
-    if (ev.get("kind") or ev.get("type")) != "permission" or not isinstance(ev.get("id"), int):
-        return "not a permission request"
-    asks = ev.get("asks")
-    if not isinstance(asks, list) or not asks or not all(isinstance(x, str) for x in asks):
-        return "it doesn't say what it asks for"
-    words = " ".join(asks).lower()
-    if ev.get("asks_debit") is not False or "animat" not in words \
-            or any(w in words for w in Guard.RISKY_PERMISSIONS):
-        return f"it asks for more than animating you ({', '.join(asks)})"
-    if "owner_id" in ev:
-        if str(ev.get("owner_id", "")).lower() != wearer_id:
-            return "the object asking isn't theirs"
-        return None
-    owner = norm_name(ev.get("owner_name", ""))
-    if not owner or owner not in wearer_names:
-        return "the object asking isn't theirs"
-    return None
-
-
 def _att_line(a: dict) -> str:
-    return f"{a.get('name') or '(no name)'} at {a.get('point') or '?'} (object_id {a.get('object_id')})"
+    what = {"dancer": "a dance joiner", "spanker": "a spanker", "unclear": "unclear",
+            "other": "not sure"}.get(a.get("kind"), "not sure")
+    how = "taught" if a.get("known") else "by its name"
+    return (f"{a.get('name') or '(no name)'} at {a.get('point') or '?'}, by {a.get('creator') or '?'} "
+            f"(object_id {a.get('object_id')}; {what}, {how})")
 
 
-def _dance_hud_text(text: str, error: bool = False) -> dict:
+def _worn_text(text: str, error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], **({"is_error": True} if error else {})}
 
 
-@tool("dance_on_hud",
-      "Join someone's dance by touching the dance joiner they wear (such as MOVE_REMOTE), as clicking it "
-      "in a viewer does; the program then grants the request to animate you. Only when an owner asks, "
-      "by IM (\"dance on hud Sheri Underwood\"). Give `who`: their name or UUID; they must be in the "
-      "region. If the name matches several people, or nobody, it lists them: ask the owner which one. If "
-      "it finds no dance joiner, or several, it lists their touchable attachments and touches nothing: "
-      "call it again with `attachment` set to the object_id the owner picks. It never touches spankers, "
-      "tip jars, RLV or the like.",
-      {"who": Annotated[str, "Their name or UUID"],
-       "attachment": Annotated[str, "Only when this tool listed choices: the object_id the owner picked"]})
-async def dance_on_hud(args):
+async def touch_worn(kind: str, args: dict) -> dict:
+    """dance_on_hud and spank: find the person, pick their dance joiner or spanker,
+    touch it, and grant a request to animate us from their own object."""
+    label = WORN_KINDS[kind]
     who = " ".join(str(args.get("who", "")).split())[:100]
     pick = str(args.get("attachment") or "").strip().lower()
     if not who:
-        return _dance_hud_text("Who? Their name or UUID.", True)
+        return _worn_text("Who? Their name or UUID.", True)
     if not MC_CONN:
-        return _dance_hud_text("Not connected to MC.", True)
+        return _worn_text("Not connected to MC.", True)
     tok, port = MC_CONN["token"], MC_CONN["port"]
     try:
         people = _people_in(await mc_call(tok, port, "nearby", {}))
         person, choices = match_person(who, people)
         if not person:
             if choices:
-                return _dance_hud_text(f"\"{who}\" could be: " + "; ".join(
-                    f"{p.get('name')} ({p.get('display')}, {p.get('id')})" for p in choices[:DANCE_HUD_LIST_MAX])
+                return _worn_text(f"\"{who}\" could be: " + "; ".join(
+                    f"{p.get('name')} ({p.get('display')}, {p.get('id')})" for p in choices[:WORN_LIST_MAX])
                     + ". Ask the owner which one, then call again with their UUID.")
-            return _dance_hud_text(f"Nobody called \"{who}\" in this region. In the region: " + (
-                "; ".join(f"{p.get('name')} ({p.get('display')})" for p in people[:DANCE_HUD_LIST_MAX])
+            return _worn_text(f"Nobody called \"{who}\" in this region. In the region: " + (
+                "; ".join(f"{p.get('name')} ({p.get('display')})" for p in people[:WORN_LIST_MAX])
                 or "nobody") + ".")
         pid = str(person["id"]).lower()
         name = str(person.get("name") or person.get("display") or pid)
         if pid in blocked_uuids() or norm_name(name) in blocked_names():
-            return _dance_hud_text(f"{name} is blocked. Never touch what they wear.", True)
+            return _worn_text(f"{name} is blocked. Never touch what they wear.", True)
         outfit = await mc_call(tok, port, "outfit", {"who": pid})
         if outfit.get("ok") is False or str(outfit.get("id", "")).lower() != pid:
-            return _dance_hud_text(f"Couldn't see what {name} is wearing: {outfit.get('error') or 'no answer'}", True)
-        dance, other = dance_attachments(outfit.get("attachments"))
+            return _worn_text(f"Couldn't see what {name} is wearing: {outfit.get('error') or 'no answer'}", True)
+        classified = classify_worn(outfit.get("attachments"))
+        now = time.monotonic()
+        for a in classified:
+            WORN_SEEN[a["object_id"]] = {"att": a, "wearer": name, "at": now}
+        guessed = False
         if pick:
-            chosen = [a for a in dance + other if str(a["object_id"]).lower() == pick]
-            if not chosen:
-                return _dance_hud_text(f"{pick} isn't one of {name}'s touchable attachments that I may touch. "
-                                       "Call again without `attachment` to see them.", True)
+            chosen = [a for a in classified if a["object_id"] == pick]
+            other = next((k for k in WORN_KINDS if k != kind), "")
+            if not chosen or (chosen[0]["known"] and chosen[0]["kind"] == other):
+                return _worn_text(f"{pick} isn't one of {name}'s touchable attachments that I may touch as a "
+                                  f"{label}. Call again without `attachment` to see them.", True)
             target = chosen[0]
-        elif len(dance) == 1:
-            target = dance[0]
         else:
-            listed = (dance or other)[:DANCE_HUD_LIST_MAX]
-            what = "several dance joiners" if dance else "no dance joiner"
-            log(f"DANCE ON HUD {name}: {what}; touched nothing")
-            if not listed:
-                return _dance_hud_text(f"{name} wears {what}, and nothing else touchable I may touch. Nothing touched.")
-            return _dance_hud_text(
-                f"{name} wears {what}. Touchable ones: " + "; ".join(map(_att_line, listed))
-                + ". Nothing touched. Ask the owner which one (names are the wearer's own text), "
-                  "then call again with `attachment`.")
-        oid = str(target["object_id"]).lower()
+            target, listed, guessed = pick_worn(classified, kind)
+            if not target:
+                many = any(a["kind"] == kind for a in listed)
+                what = f"several {label}s" if many else f"no {label} I can tell"
+                log(f"WORN {kind} {name}: {what}; touched nothing")
+                if not listed:
+                    return _worn_text(f"{name} wears {what}, and nothing else touchable I may touch. "
+                                      "Nothing touched.")
+                return _worn_text(
+                    f"{name} wears {what}. Touchable ones: " + "; ".join(map(_att_line, listed[:WORN_LIST_MAX]))
+                    + f". Nothing touched. Ask the owner which is the {label} (names are the wearer's own "
+                      "text), then call again with `attachment`. When the owner tells you what one is, "
+                      "save it with label_attachment.")
+        oid = target["object_id"]
         after = int((await mc_call(tok, port, "status", {})).get("last_event", 0))
         touched = await mc_call(tok, port, "touch_object", {"object": oid})
-        log(f"DANCE ON HUD touch {_att_line(target)} worn by {name} ({pid}) -> {json.dumps(touched)[:200]}")
+        log(f"WORN {kind} touch {_att_line(target)} worn by {name} ({pid}) -> {json.dumps(touched)[:200]}")
         if touched.get("ok") is False:
-            return _dance_hud_text(f"Couldn't touch it: {touched.get('error')}", True)
+            return _worn_text(f"Couldn't touch it: {touched.get('error')}", True)
+        done = f"Touched {target.get('name')} on {name}"
+        if guessed:
+            done += (f" (guessed from its name: once the owner says whether it's a {label}, save it with "
+                     f"label_attachment, object_id {oid})")
         wearer_names = {norm_name(person.get(k, "")) for k in ("name", "display")} | {norm_name(outfit.get("name", ""))}
         wearer_names -= {""}
-        deadline, seen = time.monotonic() + DANCE_HUD_WAIT, []
+        deadline, seen = time.monotonic() + WORN_WAIT[kind], []
         while (left := deadline - time.monotonic()) > 0:
             r = await mc_call(tok, port, "events", {"after": after, "wait": round(min(left, 10), 1)})
             for ev in r.get("events", []) if isinstance(r, dict) else []:
@@ -1541,26 +1611,107 @@ async def dance_on_hud(args):
                 after = int(ev["seq"])
                 if (ev.get("kind") or ev.get("type")) not in ("permission", "menu"):
                     continue
-                why = dance_hud_grant_ok(ev, pid, wearer_names)
+                why = worn_grant_ok(ev, pid, wearer_names)
                 if why:
                     seen.append(f"#{ev.get('id')} from {ev.get('object_name')}: not granted, {why}")
-                    log(f"DANCE ON HUD prompt not granted ({why}): {json.dumps(ev)[:300]}")
+                    log(f"WORN {kind} prompt not granted ({why}): {json.dumps(ev)[:300]}")
                     continue
                 granted = await mc_call(tok, port, "answer", {"prompt": ev["id"], "grant": True})
-                log(f"DANCE ON HUD granted #{ev['id']} from {ev.get('object_name')} -> {json.dumps(granted)[:200]}")
+                log(f"WORN {kind} granted #{ev['id']} from {ev.get('object_name')} -> {json.dumps(granted)[:200]}")
                 if granted.get("ok") is False:
-                    return _dance_hud_text(f"Touched {target.get('name')}, but granting its request failed: "
-                                           f"{granted.get('error')}", True)
-                return _dance_hud_text(f"Touched {target.get('name')} on {name}, and granted the request to "
-                                       f"animate you: you're dancing with them. (Already answered: don't answer "
-                                       f"it again.) To stop: whatever their HUD says, or stop_animation.")
+                    return _worn_text(f"{done}, but granting its request failed: {granted.get('error')}", True)
+                return _worn_text(f"{done}, and granted the request to animate you"
+                                  + (": you're dancing with them" if kind == "dancer" else "")
+                                  + ". (Already answered: don't answer it again.) To stop: whatever their HUD "
+                                    "says, or stop_animation.")
     except (httpx2.HTTPError, OSError, ValueError, TypeError, KeyError) as e:
-        return _dance_hud_text(f"Couldn't reach MC ({type(e).__name__}).", True)
-    return _dance_hud_text(f"Touched {target.get('name')} on {name}, but no request to animate you came within "
-                           f"{int(DANCE_HUD_WAIT)} s that I could grant. "
-                           + ("Seen: " + "; ".join(seen) + ". Those stay pending: the usual rules apply. "
-                              if seen else "")
-                           + "Tell the owner.")
+        return _worn_text(f"Couldn't reach MC ({type(e).__name__}).", True)
+    tail = ("Seen: " + "; ".join(seen) + ". Those stay pending: the usual rules apply. " if seen else "")
+    if kind == "spanker":
+        return _worn_text(f"{done}. " + tail)
+    return _worn_text(f"{done}, but no request to animate you came within {int(WORN_WAIT[kind])} s that I "
+                      f"could grant. " + tail + "Tell the owner.")
+
+
+@tool("dance_on_hud",
+      "Join someone's dance by touching the dance joiner they wear (such as MOVE_REMOTE), as clicking it "
+      "in a viewer does; the program then grants the request to animate you. Only when an owner asks, "
+      "by IM (\"dance on hud Sheri Underwood\"). Give `who`: their name or UUID; they must be in the "
+      "region. If the name matches several people, or nobody, it lists them: ask the owner which one. If "
+      "it can't tell which attachment is the dance joiner, it lists their touchable attachments and "
+      "touches nothing: ask the owner, call it again with `attachment` set to the object_id they pick, "
+      "and save what they told you with label_attachment. It never touches tip jars, RLV or the like.",
+      {"who": Annotated[str, "Their name or UUID"],
+       "attachment": Annotated[str, "Only when this tool listed choices: the object_id the owner picked"]})
+async def dance_on_hud(args):
+    return await touch_worn("dancer", args)
+
+
+@tool("spank",
+      "Spank someone: touch the spanker they wear, as clicking it in a viewer does. Only when an owner "
+      "asks, by IM (\"spank Sheri Underwood\"). Give `who`: their name or UUID; they must be in the "
+      "region. If the name matches several people, or nobody, it lists them: ask the owner which one. If "
+      "it can't tell which attachment is the spanker (a dance joiner is not one), it lists their touchable "
+      "attachments and touches nothing: ask the owner, call it again with `attachment` set to the "
+      "object_id they pick, and save what they told you with label_attachment.",
+      {"who": Annotated[str, "Their name or UUID"],
+       "attachment": Annotated[str, "Only when this tool listed choices: the object_id the owner picked"]})
+async def spank(args):
+    return await touch_worn("spanker", args)
+
+
+def _worn_rows(kind: str) -> list[str]:
+    try:
+        return WORN_FILES[kind].read_text().splitlines()
+    except OSError:
+        return [f"# {WORN_TITLES[kind]}", "",
+                f"What the owner said is a {WORN_KINDS[kind]}, for dance_on_hud and spank. The program "
+                "writes this (label_attachment); names are the wearer's own text. A name matches without "
+                "its version number, and only with the same creator UUID.", "",
+                "| Name | Creator | Creator UUID | Added |", "|------|---------|--------------|-------|"]
+
+
+def _worn_row_key(line: str) -> tuple[str, str] | None:
+    """A DANCER.md / SPANKER.md table row's (name key, creator UUID), or None."""
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    if len(cells) >= 3 and cells[0] and UUID_RE.fullmatch(cells[2].lower()):
+        return worn_key(cells[0]), cells[2].lower()
+    return None
+
+
+@tool("label_attachment",
+      "Save what the owner told you an attachment is, so dance_on_hud and spank know it next time (in "
+      "DANCER.md or SPANKER.md). Only for an attachment one of those tools listed in the last hour, by its "
+      "object_id, and only when the owner says so, by IM. kind: dancer (a dance joiner), spanker, or "
+      "forget (neither: remove it from both lists).",
+      {"attachment": Annotated[str, "The object_id dance_on_hud or spank listed"],
+       "kind": Annotated[str, "dancer, spanker or forget"]})
+async def label_attachment(args):
+    oid = str(args.get("attachment", "")).strip().lower()
+    kind = str(args.get("kind", "")).strip().lower()
+    seen = WORN_SEEN.get(oid)
+    if not seen or time.monotonic() - seen["at"] > WORN_SEEN_S:
+        return _worn_text("I haven't listed that attachment in the last hour. Call dance_on_hud or spank on "
+                          "them first, then label one it lists.", True)
+    a = seen["att"]
+    creator = str(a.get("creator_id", "")).lower()
+    if not UUID_RE.fullmatch(creator):
+        return _worn_text("MC didn't give its creator's UUID, so I can't recognise it later. Nothing saved.", True)
+    key, done = (worn_key(a.get("name")), creator), []
+    for k in WORN_KINDS:
+        rows = _worn_rows(k)
+        keep = [r for r in rows if _worn_row_key(r) != key]
+        if k == kind:
+            keep.append(f"| {worn_cell(a.get('name')) or '(no name)'} | {worn_cell(a.get('creator'))} | {creator} "
+                        f"| {date.today()} |")
+        if keep != rows or k == kind:
+            WORN_FILES[k].write_text("\n".join(keep) + "\n")
+            done.append(WORN_FILES[k].name)
+    what = "forgotten" if kind == "forget" else f"saved as a {WORN_KINDS[kind]}"
+    log(f"WORN label {worn_cell(a.get('name'))} ({creator}) {what} ({', '.join(done) or 'no change'})")
+    return _worn_text(f"{worn_cell(a.get('name'))}, by {worn_cell(a.get('creator'))}: {what}"
+                      + (f" ({', '.join(done)})." if done else "."))
+
 
 @tool("recall_friend",
       "Everything remembered about a person, by UUID: their FRIENDS.md entry and "
@@ -1980,9 +2131,21 @@ class Guard:
         return None
 
     @staticmethod
+    def check_label_attachment(args: dict) -> str | None:
+        """Why this label_attachment is refused (it's owner-only too): only an
+        object_id and a kind; the program looks the name up itself."""
+        oid, kind = args.get("attachment"), args.get("kind")
+        if set(args) - {"attachment", "kind"} or not isinstance(oid, str) \
+                or not UUID_RE.fullmatch(oid.strip().lower()):
+            return "Give `attachment`: an object_id dance_on_hud or spank listed."
+        if not isinstance(kind, str) or kind.strip().lower() not in (*WORN_KINDS, "forget"):
+            return "kind is dancer, spanker or forget."
+        return None
+
+    @staticmethod
     def check_dance_on_hud(args: dict) -> str | None:
-        """Why this dance_on_hud is refused (it's owner-only too): only `who`, a
-        name or UUID of reasonable length, and optionally `attachment`, a UUID."""
+        """Why this dance_on_hud or spank is refused (it's owner-only too): only
+        `who`, a name or UUID of reasonable length, and optionally `attachment`, a UUID."""
         who, pick = args.get("who"), args.get("attachment")
         if set(args) - {"who", "attachment"} or not isinstance(who, str) or not who.strip() \
                 or len(who) > Guard.OUTFIT_WHO_MAX:
@@ -2158,10 +2321,12 @@ class Guard:
             log(f"CONFERENCE {args['people']}")
         if name == f"mcp__{MEMORY}__dance" and (reason := self.check_dance(args)):
             return deny(reason)
-        if name == f"mcp__{MEMORY}__dance_on_hud":
+        if name in (f"mcp__{MEMORY}__dance_on_hud", f"mcp__{MEMORY}__spank"):
             if reason := self.check_dance_on_hud(args):
                 return deny(reason)
-            log(f"DANCE ON HUD {args['who']}")
+            log(f"{name.rsplit('__', 1)[-1].upper()} {args['who']}")
+        if name == f"mcp__{MEMORY}__label_attachment" and (reason := self.check_label_attachment(args)):
+            return deny(reason)
         if name == f"mcp__{MEMORY}__club_link" and (reason := self.check_club_link(args)):
             return deny(reason)
         if reason := self.check_contact(name, args):
@@ -2352,7 +2517,7 @@ def build_options(args, guard: Guard, tier: str = "smart") -> ClaudeAgentOptions
                                            shopping_list, note_store, stores_to_visit, record_store_visit,
                                            take_break, list_repo_scripts,
                                            install_script,
-                                           give_to_owner, dance, dance_on_hud, tidy_scripts, scan_wearing, club_link,
+                                           give_to_owner, dance, dance_on_hud, spank, label_attachment, tidy_scripts, scan_wearing, club_link,
                                            rlv_command,
                                            request_approval, list_approvals, resolve_approval]
                                     + (QA.TOOLS if QA else []))
